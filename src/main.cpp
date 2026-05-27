@@ -359,7 +359,10 @@ void connectOcpp() {
   ws.onEvent(wsEvent);
   if (backendPassword.length() > 0) {
     String auth = base64::encode(chargeboxId + ":" + backendPassword);
-    ws.setAuthorization("Basic " + auth);
+    //ws.setAuthorization("Basic " + auth);
+    String authHeader = "Basic " + auth;
+ws.setAuthorization(authHeader.c_str());
+
   }
   ws.setExtraHeaders("Sec-WebSocket-Protocol: ocpp1.6\r\n");
   if (secure) {
