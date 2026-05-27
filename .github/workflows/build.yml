@@ -5,30 +5,45 @@ on:
   push:
     branches: [ main ]
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   build:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.x'
 
+      - name: Upgrade pip
+        run: python -m pip install --upgrade pip
+
       - name: Install PlatformIO
         run: python -m pip install platformio
+
+      - name: Show project files
+        run: |
+          pwd
+          ls -la
+          find . -maxdepth 3 -type f
 
       - name: Build firmware
         run: pio run
 
       - name: Collect firmware files
+        if: success()
         run: |
           mkdir -p firmware
           find .pio/build -type f -name "*.bin" -print -exec cp {} firmware/ \;
 
       - name: Upload firmware artifact
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: esp32-s3-firmware
