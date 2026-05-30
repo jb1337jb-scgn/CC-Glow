@@ -1,16 +1,22 @@
-# ESP32-S3 Ladestations-Simulation
+# ESP32-S3 EVSE Simulator mit Webinterface
 
 Firmware-Projekt fuer eine einfache Ladestations-Simulation mit ESP32-S3-N16R8.
 
 ## Funktionen
 
-- Fahrzeug verbunden per Schalter
-- Start/Autorisierung per Taster
-- Stop per Taster
-- Fehler per Schalter/Taster
-- Ladeleistung per Poti von 0 bis 22 kW
-- Statusanzeige ueber LEDs
-- Serielle Ausgabe mit Status, kW und berechnetem 3-phasigem Strom
+- AP+STA Modus
+- STA verbindet sich mit Router SSID `internet`, Passwort `internet`
+- Lokaler AP mit geraeteabhaengiger SSID, z. B. `EVSE-SIM-A1B2C3`
+- Webinterface unter `http://192.168.4.1` im lokalen AP
+- Webinterface auch ueber die vom Router vergebene STA-IP erreichbar
+- Live-Anzeige aller Eingaenge, Ausgaenge, Statuswerte und Ladeleistung
+- Poti fuer 0 bis 22 kW
+
+## AP Zugang
+
+- SSID: `EVSE-SIM-xxxxxx`, abhaengig von der Geraete-ID
+- Passwort: `chargecloud`
+- IP: `http://192.168.4.1`
 
 ## Pinbelegung
 
