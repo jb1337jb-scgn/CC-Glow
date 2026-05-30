@@ -774,6 +774,15 @@ void finishChargeSession(float powerKw, const String& reason) {
   sessionActive = false;
 }
 
+void syncSessionWithState(float powerKw) {
+  if (state == CHARGING && !sessionActive) {
+    startChargeSession();
+  }
+  if (state != CHARGING && sessionActive) {
+    finishChargeSession(powerKw, "State left CHARGING");
+  }
+}
+
 void setup() {
   Serial.begin(115200);
   delay(300);
