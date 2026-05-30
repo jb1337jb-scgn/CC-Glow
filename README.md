@@ -1,7 +1,11 @@
-# ESP32-S3 EVSE Simulator mit Charging-Grafik
+# ESP32-S3 EVSE Simulator - repaired session handling
 
-Diese Version zeigt die hochgeladene Grafik im Webinterface, solange eine Session aktiv ist / geladen wird.
+Diese Version macht die letzte Bild-Aenderung rueckgaengig und repariert/verbessert das Session Handling:
 
-- Grafik erscheint in der Karte "Aktuelle Session"
-- Grafik wird ausgeblendet, sobald nicht mehr geladen wird
-- NeoPixel blinkt blau bei CHARGING
+- Keine eingebettete grosse Grafik mehr im Webinterface
+- NeoPixel bleibt enthalten
+- Session startet automatisch bei CHARGING
+- Session endet automatisch sobald CHARGING verlassen wird
+- Aktive Session zeigt Verbrauch/Kosten live als Vorschau, auch innerhalb des 10s Meterintervalls
+- Finale Abrechnung nutzt Restzeit bei Stop, Fehler oder Fahrzeugtrennung
+- Persistente Ladevorgaenge, Loeschen und Rechnung letzte 3 bleiben enthalten
