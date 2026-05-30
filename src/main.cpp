@@ -409,18 +409,13 @@ void setupOcppOptional(){
     // Depending on transport adapter, credentials may need to be configured in the URL or adapter.
     addLog("OCPP Basic Auth configured for chargeboxId=" + chargeboxId);
   }
-  mocpp_initialize(url.c_str(), chargeboxId.c_str(), "chargecloud-mini-lab", "ESP32-S3", MicroOcpp::ProtocolVersion(1,6));
+  mocpp_initialize(url.c_str(), chargeboxId.c_str(), "chargecloud-mini-lab", "ESP32-S3");
   ocppInitialized = true;
   ocppStatus = "started";
 }
 
 void ocppLoopOptional(){
   if(ocppInitialized){ mocpp_loop(); }
-}
-
-void ocppSetStatusLocal(){
-  if(!ocppInitialized) return;
-  if(faulted) MicroOcpp::setConnectorPluggedInput([](){return true;});
 }
 
 void setup(){
