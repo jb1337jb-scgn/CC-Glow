@@ -65,6 +65,8 @@ float powerKwToCurrentA(float kw);
 String extractOcppUid(const String& msg);
 int extractJsonInt(const String& src, const String& key, int fallback);
 int extractJsonStringInt(const String& src, const String& key, int fallback);
+String extractJsonString(const String& src, const String& key);
+void resetOcppSessionState();
 
 
 
@@ -165,6 +167,8 @@ int extractJsonInt(const String& src, const String& key, int fallback);
 float adcToPowerKw(int adc);
 float powerKwToCurrentA(float kw);
 int extractJsonStringInt(const String& src, const String& key, int fallback);
+String extractJsonString(const String& src, const String& key);
+void resetOcppSessionState();
 void backendSendResult(const String& uid,const String& payload){
   if(!backendConnected) return;
   String msg="[3,\""+uid+"\","+payload+"]"; backendWs.sendTXT(msg); lastOcppTx=msg.substring(0,240);
