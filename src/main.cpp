@@ -467,10 +467,15 @@ String htmlPage() {
 
       <div class="card">
         <h2>Aufzeichnung Ladevorgaenge</h2>
+        <button onclick="downloadInvoiceLast3()" style="background:#00d9ff;color:#001c25;border:0;border-radius:8px;padding:7px 10px;margin-bottom:10px;margin-right:8px;">Rechnung letzte 3 herunterladen</button>
         <button onclick="clearSessions()" style="background:#367cff;color:white;border:0;border-radius:8px;padding:7px 10px;margin-bottom:10px;">Alle abgeschlossenen Ladevorgaenge loeschen</button>
+        <div class="row"><span>Session Status</span><span id="activeState" class="badge off">INAKTIV</span></div>
         <div class="row"><span>Aktive Session Start</span><span id="activeStart" class="value">-</span></div>
+        <div class="row"><span>Aktuelle Leistung</span><span><span id="activePower" class="value">0.0</span> kW</span></div>
         <div class="row"><span>Aktiver Verbrauch</span><span><span id="activeEnergy" class="value">0.000</span> kWh</span></div>
-        <div class="row"><span>Aktive Kosten</span><span><span id="activeCost" class="value">0.00</span> EUR</span></div>
+        <div class="row"><span>Aktive Kosten</span><span><span id="activeCost" class="value">0.000</span> EUR</span></div>
+        <div class="row"><span>Tarif</span><span class="value">5,00 EUR/kWh</span></div>
+        <div class="row"><span>Meterintervall</span><span class="value">10 s + Rest bei Stop</span></div>
         <div id="sessionsList" class="ocpp"></div>
       </div>
       <div class="card">
@@ -482,6 +487,7 @@ String htmlPage() {
   </div>
 
 <script>
+let latestStatusData = null;
 let powerHistory = [];
 let lastCharging = false;
 const maxPoints = 120;
@@ -560,6 +566,7 @@ async function updateStatus() {
   try {
     const res = await fetch("/api/status", { cache: "no-store" });
     const data = await res.json();
+    latestStatusData = data;
     const ocpp = deriveOcpp(data);
     updatePowerChart(data);
 
@@ -592,7 +599,11 @@ async function updateStatus() {
     setBadge("outCharging", data.outputs.charging);
     setErrorBadge("outFaulted", data.outputs.faulted, "AN", "AUS");
 
+    const activeState = document.getElementById("activeState");
+    activeState.textContent = data.session.active ? "AKTIV" : "INAKTIV";
+    activeState.className = "badge " + (data.session.active ? "on" : "off");
     document.getElementById("activeStart").textContent = data.session.active ? data.session.startTime : "-";
+    document.getElementById("activePower").textContent = Number(data.powerKw).toFixed(1);
     document.getElementById("activeEnergy").textContent = Number(data.session.activeEnergyKwh).toFixed(3);
     document.getElementById("activeCost").textContent = Number(data.session.activeCostEur).toFixed(3);
     const list = document.getElementById("sessionsList");
@@ -608,12 +619,6 @@ async function updateStatus() {
       });
     }
 
-    const term = document.getElementById("debugTerminal");
-    if (term && data.debugLog) {
-      term.textContent = data.debugLog.join("\n");
-      term.scrollTop = term.scrollHeight;
-    }
-
     setStep("stepBoot", true);
     setStep("stepAvailable", ocpp === "Available");
     setStep("stepPreparing", ocpp === "Preparing" || ocpp === "Charging");
@@ -624,6 +629,35 @@ async function updateStatus() {
     setStep("stepFault", ocpp === "Faulted", true);
   } catch (e) { console.log("Update fehlgeschlagen", e); }
 }
+function downloadInvoiceLast3() {
+  if (!latestStatusData || !latestStatusData.session || !latestStatusData.session.history || !latestStatusData.session.history.length) {
+    alert("Keine abgeschlossenen Ladevorgaenge vorhanden.");
+    return;
+  }
+  const data = latestStatusData;
+  const sessions = data.session.history.slice(-3);
+  const price = Number(data.session.priceEurPerKwh || 5.0);
+  let totalEnergy = 0;
+  let totalCost = 0;
+  const rows = sessions.map(s => {
+    const energy = Number(s.energyKwh || 0);
+    const cost = Number(s.costEur || (energy * price));
+    totalEnergy += energy;
+    totalCost += cost;
+    return `<tr><td>#${s.id}</td><td>${s.startTime}</td><td>${s.endTime}</td><td>${energy.toFixed(3)} kWh</td><td>${price.toFixed(2)} EUR/kWh</td><td>${cost.toFixed(2)} EUR</td></tr>`;
+  }).join("");
+  const html = `<!DOCTYPE html><html lang="de"><head><meta charset="UTF-8"><title>Rechnung Glow Challenge</title><style>body{font-family:Arial,sans-serif;color:#111827;padding:32px}.brand{font-size:28px;font-weight:bold;margin-bottom:20px}.brand span{color:#ff3ecf}table{width:100%;border-collapse:collapse;margin-top:24px}th,td{border:1px solid #d1d5db;padding:10px;text-align:left}th{background:#f3f4f6}.total{margin-top:24px;font-size:18px;font-weight:bold}.note{margin-top:28px;color:#6b7280;font-size:12px}</style></head><body><div class="brand">charge<span>cloud</span></div><h1>Rechnung - Glow Challenge</h1><p><strong>Geraete-ID:</strong> ${data.deviceId}</p><p><strong>AP SSID:</strong> ${data.apSsid}</p><p><strong>Erstellt:</strong> ${new Date().toLocaleString("de-DE")}</p><table><thead><tr><th>Ladevorgang</th><th>Start</th><th>Ende</th><th>Verbrauch</th><th>Preis</th><th>Betrag</th></tr></thead><tbody>${rows}</tbody></table><div class="total">Gesamtverbrauch: ${totalEnergy.toFixed(3)} kWh<br>Gesamtbetrag: ${totalCost.toFixed(2)} EUR</div><div class="note">Demo-Abrechnung fuer simulierte Ladevorgaenge.</div></body></html>`;
+  const blob = new Blob([html], { type: "text/html" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "glow-challenge-rechnung-letzte-3.html";
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
 async function deleteSession(id) {
   await fetch("/api/session/delete?id=" + encodeURIComponent(id), { cache: "no-store" });
   updateStatus();
@@ -731,6 +765,15 @@ void updateNeoPixel() {
   }
 }
 
+void finishChargeSession(float powerKw, const String& reason) {
+  if (!sessionActive) return;
+  updateEnergy(powerKw, true);
+  String endTime = currentDateTimeString();
+  addCompletedSession(activeSessionStartTime, endTime, activeEnergyKwh);
+  addDebugLog("SESSION STOP | reason=" + reason + " | end=" + endTime + " | energy=" + String(activeEnergyKwh, 4) + " kWh | cost=" + String(activeEnergyKwh * ENERGY_PRICE_EUR_PER_KWH, 3) + " EUR");
+  sessionActive = false;
+}
+
 void setup() {
   Serial.begin(115200);
   delay(300);
@@ -795,6 +838,10 @@ void loop() {
   float currentA = powerKwToCurrentA(powerKw);
 
   if (errorActive) {
+    if (state == CHARGING) {
+      finishChargeSession(powerKw, "Fault");
+      addDebugLog("OCPP | StopTransaction -> FAULTED");
+    }
     state = ERROR_STATE;
   } else {
     switch (state) {
@@ -814,6 +861,7 @@ void loop() {
           addDebugLog("OCPP | Authorize");
           delay(300);
           state = CHARGING;
+          if (!sessionActive) startChargeSession();
           addDebugLog("OCPP | StartTransaction -> CHARGING");
         }
         break;
@@ -824,16 +872,18 @@ void loop() {
 
       case CHARGING:
         if (!vehicleConnected) {
+          finishChargeSession(powerKw, "Vehicle disconnected");
           state = IDLE;
           addDebugLog("STATE | Fahrzeug getrennt -> IDLE/AVAILABLE");
         } else if (stopPressed) {
+          finishChargeSession(powerKw, "Stop button");
           state = CONNECTED;
           addDebugLog("OCPP | StopTransaction -> CONNECTED/PREPARING");
         }
         break;
 
       case ERROR_STATE:
-        state = IDLE;
+        state = vehicleConnected ? CONNECTED : IDLE;
         break;
     }
   }

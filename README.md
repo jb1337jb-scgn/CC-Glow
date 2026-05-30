@@ -1,12 +1,10 @@
-# ESP32-S3 Glow Challenge EVSE Simulator - Persistente Ladevorgaenge
+# ESP32-S3 Glow Challenge EVSE Simulator - Rechnung letzte 3
 
 Neu:
 
-- Taster/Eingaenge entprellt mit 50 ms
-- Abgeschlossene Ladevorgaenge bleiben nach Reboot erhalten
-- Ladevorgaenge werden hochlaufend nummeriert
-- Einzelne Ladevorgaenge koennen im Webinterface geloescht werden
-- Alle abgeschlossenen Ladevorgaenge koennen geloescht werden
-- Debug-Terminal bleibt enthalten
+- Button im Webinterface: Rechnung letzte 3 herunterladen
+- Erstellt eine kleine HTML-Demo-Rechnung im Browser
+- Enthaelt die letzten drei abgeschlossenen Ladevorgaenge
+- Zeigt Gesamtverbrauch und Gesamtbetrag
 
-Speicherung erfolgt im ESP32 NVS via Preferences.
+Hinweis: Dies ist eine Demo-Abrechnung, keine rechtssichere Rechnung.
