@@ -61,10 +61,9 @@ float activeEnergyKwh=0.0f;
 
 
 // Backend / OCPP 1.6J WebSocket
-String backendUrl = "ws://demo.ocpp.cc/83d29edd7b79881259e1759ed19ea569";
-String backendHost = "demo.ocpp.cc";
-uint16_t backendPort = 80;
-String backendBasePath = "/83d29edd7b79881259e1759ed19ea569";
+const char* BACKEND_HOST = "demo.ocpp.cc";
+const uint16_t BACKEND_PORT = 80;
+const char* BACKEND_TENANT_PATH = "/83d29edd7b79881259e1759ed19ea569";
 String backendPath;
 bool backendConnected = false;
 String lastBackendEvent = "-";
@@ -73,8 +72,6 @@ unsigned long backendEventCount = 0;
 unsigned long ocppMsgCounter = 1;
 int currentTransactionId = 1;
 unsigned long lastBackendMeterMillis = 0;
-unsigned long lastHeartbeatMillis = 0;
-const unsigned long HEARTBEAT_INTERVAL_MS = 300000;
 
 String isoTimestamp(){
   struct tm t;
@@ -91,7 +88,6 @@ void backendSendRaw(const String& action,const String& payload){
 void sendBackendEvent(const String& eventName, float powerKw=0.0f){
   String ts = isoTimestamp();
   if(eventName=="BootNotification") backendSendRaw("BootNotification", "{\"chargePointVendor\":\"chargecloud\",\"chargePointModel\":\"EVSE Simulator ESP32-S3\",\"chargePointSerialNumber\":\""+chargeBoxId+"\",\"chargeBoxSerialNumber\":\""+chargeBoxId+"\",\"firmwareVersion\":\"stage1-websocket\",\"iccid\":\"\",\"imsi\":\"\",\"meterType\":\"Simulated 3P AC Meter\",\"meterSerialNumber\":\"METER-"+deviceId+"\"}");
-  else if(eventName=="Heartbeat") backendSendRaw("Heartbeat", "{}");
   else if(eventName=="Authorize") backendSendRaw("Authorize", "{\"idTag\":\"CAFFEE\"}");
   else if(eventName=="StartTransaction") backendSendRaw("StartTransaction", "{\"connectorId\":1,\"idTag\":\"CAFFEE\",\"meterStart\":0,\"timestamp\":\""+ts+"\"}");
   else if(eventName=="MeterValues") backendSendRaw("MeterValues", "{\"connectorId\":1,\"transactionId\":"+String(currentTransactionId)+",\"meterValue\":[{\"timestamp\":\""+ts+"\",\"sampledValue\":[{\"value\":\""+String(activeEnergyKwh,3)+"\",\"measurand\":\"Energy.Active.Import.Register\",\"unit\":\"kWh\"},{\"value\":\""+String(powerKw,1)+"\",\"measurand\":\"Power.Active.Import\",\"unit\":\"kW\"}]}]}");
@@ -113,38 +109,10 @@ void backendWsEvent(WStype_t type, uint8_t* payload, size_t length){
   else if(type==WStype_DISCONNECTED){ backendConnected=false; lastBackendMessage="DISCONNECTED"; }
   else if(type==WStype_TEXT){ lastBackendMessage=String((char*)payload).substring(0,180); }
 }
-void parseBackendUrl(){
-  String u=backendUrl; u.trim();
-  if(u.startsWith("ws://")) u=u.substring(5);
-  int slash=u.indexOf('/');
-  String hp = slash>=0 ? u.substring(0,slash) : u;
-  backendBasePath = slash>=0 ? u.substring(slash) : "";
-  int colon=hp.indexOf(':');
-  backendHost = colon>=0 ? hp.substring(0,colon) : hp;
-  backendPort = colon>=0 ? (uint16_t)hp.substring(colon+1).toInt() : 80;
-  if(backendPort==0) backendPort=80;
-}
-void loadBackendConfig(){
-  prefs.begin("backend", true);
-  backendUrl = prefs.getString("url", backendUrl);
-  chargeBoxId = prefs.getString("cbid", "EVSE-" + deviceId);
-  prefs.end();
-  parseBackendUrl();
-}
-void saveBackendConfig(String url, String cbid){
-  url.trim(); cbid.trim();
-  if(url.length()>0) backendUrl=url;
-  if(cbid.length()>0) chargeBoxId=cbid;
-  prefs.begin("backend", false);
-  prefs.putString("url", backendUrl);
-  prefs.putString("cbid", chargeBoxId);
-  prefs.end();
-  parseBackendUrl();
-}
 void setupBackend(){
-  loadBackendConfig();
-  backendPath = backendBasePath + "/" + chargeBoxId;
-  backendWs.begin(backendHost.c_str(), backendPort, backendPath.c_str(), "ocpp1.6");
+  chargeBoxId = "EVSE-" + deviceId;
+  backendPath = String(BACKEND_TENANT_PATH) + "/" + chargeBoxId;
+  backendWs.begin(BACKEND_HOST, BACKEND_PORT, backendPath.c_str(), "ocpp1.6");
   backendWs.onEvent(backendWsEvent);
   backendWs.setReconnectInterval(5000);
 }
@@ -251,14 +219,14 @@ String htmlPage(){ return R"rawliteral(
 :root{--bg:#08051f;--card:#151033;--line:#37305f;--text:#f7f2ff;--muted:#b8add6;--cyan:#00d9ff;--blue:#367cff;--pink:#ff3ecf;--green:#26f5a8;--red:#ff4d7d;--yellow:#ffd166}*{box-sizing:border-box}body{font-family:Arial,sans-serif;background:radial-gradient(circle at 20% 0%,rgba(255,62,207,.30),transparent 34%),radial-gradient(circle at 80% 10%,rgba(0,217,255,.28),transparent 36%),linear-gradient(160deg,#090420,#071b3d 55%,#19082d);color:var(--text);margin:0;padding:22px}.container{max-width:980px;margin:auto}.brand{text-align:center;margin-bottom:22px}.logo{font-size:2.1rem;font-weight:800}.logo span{color:var(--pink)}h1{text-shadow:0 0 18px rgba(255,62,207,.55),0 0 32px rgba(0,217,255,.35)}.stack{display:flex;flex-direction:column;gap:16px}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:16px}.card{background:linear-gradient(160deg,rgba(21,16,51,.96),rgba(10,32,67,.92));border:1px solid rgba(255,62,207,.22);border-radius:16px;padding:16px}.row{display:flex;justify-content:space-between;gap:12px;border-bottom:1px solid var(--line);padding:10px 0}.row:last-child{border-bottom:0}.badge{padding:6px 11px;border-radius:999px;font-weight:700}.on{background:var(--green);color:#062014}.off{background:#506176}.error{background:var(--red)}.warn{background:var(--yellow);color:#271d00}.info{background:linear-gradient(90deg,var(--blue),var(--cyan));color:#001c25}.value{font-weight:700;color:var(--yellow)}button{border:0;border-radius:8px;padding:7px 10px;margin:4px;cursor:pointer}.btnPink{background:var(--pink);color:#fff}.btnBlue{background:var(--blue);color:#fff}.btnCyan{background:var(--cyan);color:#001c25}canvas{width:100%;height:260px;background:rgba(8,10,38,.72);border:1px solid rgba(0,217,255,.18);border-radius:14px}.step{display:flex;align-items:center;gap:10px;padding:10px;border-radius:12px;background:rgba(8,10,38,.72);border:1px solid rgba(0,217,255,.18);margin-top:8px}.dot{width:13px;height:13px;border-radius:50%;background:#506176}.active .dot{background:var(--green);box-shadow:0 0 12px var(--green)}.desc{margin-left:auto;text-align:right;color:var(--muted)}
 </style></head><body><div class="container"><div class="brand"><div class="logo">charge<span>cloud</span></div><h1>Glow Challenge</h1><div>EVSE Simulator</div></div><div class="stack">
 <div class="grid"><div class="card"><h2>System</h2><div class="row"><span>Geräte-ID</span><span id="deviceId" class="value">-</span></div><div class="row"><span>AP SSID</span><span id="apSsid" class="value">-</span></div><div class="row"><span>AP IP</span><span id="apIp" class="value">-</span></div><div class="row"><span>STA IP</span><span id="staIp" class="value">-</span></div></div><div class="card"><h2>Ladestation</h2><div class="row"><span>Status</span><span id="chargerState" class="badge off">-</span></div><div class="row"><span>OCPP Status</span><span id="ocppStatus" class="badge off">-</span></div><div class="row"><span>Ladeleistung</span><span><span id="powerKw" class="value">0.0</span> kW</span></div><div class="row"><span>Strom</span><span><span id="currentA" class="value">0.0</span> A</span></div></div></div>
-<div class="card"><h2>Backend WebSocket</h2><div class="row"><span>Status</span><span id="backendStatus" class="badge off">-</span></div><div class="row"><span>URL</span><span id="backendUrl" class="value">-</span></div><div class="row"><span>Letztes Event</span><span id="backendLastEvent" class="value">-</span></div><div class="row"><span>Letzte Antwort</span><span id="backendLastMessage" class="value">-</span></div><div class="row"><span>Events gesendet</span><span id="backendCount" class="value">0</span></div><div class="row"><span>WS Adresse</span><input id="cfgUrl" style="width:60%"></div><div class="row"><span>Chargebox-ID</span><input id="cfgCbid" style="width:60%"></div><button class="btnCyan" onclick="saveBackendCfg()">Speichern & Neustart</button></div>
+<div class="card"><h2>Backend WebSocket</h2><div class="row"><span>Status</span><span id="backendStatus" class="badge off">-</span></div><div class="row"><span>URL</span><span id="backendUrl" class="value">-</span></div><div class="row"><span>Letztes Event</span><span id="backendLastEvent" class="value">-</span></div><div class="row"><span>Letzte Antwort</span><span id="backendLastMessage" class="value">-</span></div><div class="row"><span>Events gesendet</span><span id="backendCount" class="value">0</span></div></div>
 <div class="card"><h2>Ladeleistung Verlauf</h2><canvas id="powerChart" width="900" height="260"></canvas></div>
 <div class="card"><h2>Aktuelle Session</h2><div class="row"><span>Session Status</span><span id="activeState" class="badge off">INAKTIV</span></div><div class="row"><span>State ist CHARGING</span><span id="stateIsCharging" class="badge off">NEIN</span></div><div class="row"><span>Start</span><span id="activeStart" class="value">-</span></div><div class="row"><span>Dauer</span><span><span id="activeDuration" class="value">0</span> s</span></div><div class="row"><span>Verbrauch</span><span><span id="activeEnergy" class="value">0.000</span> kWh</span></div><div class="row"><span>Kosten</span><span><span id="activeCost" class="value">0.000</span> EUR</span></div><div class="row"><span>Tarif</span><span class="value">5,00 EUR/kWh</span></div></div>
 <div class="grid"><div class="card"><h2>Eingänge</h2><div class="row"><span>GPIO3 Poti ADC</span><span id="adcValue" class="value">-</span></div><div class="row"><span>GPIO4 Fahrzeug verbunden</span><span id="inVehicle" class="badge off">-</span></div><div class="row"><span>GPIO5 Start/Auth</span><span id="inStart" class="badge off">-</span></div><div class="row"><span>GPIO6 Stop</span><span id="inStop" class="badge off">-</span></div><div class="row"><span>GPIO7 Fehler</span><span id="inError" class="badge off">-</span></div></div><div class="card"><h2>Ausgänge</h2><div class="row"><span>GPIO8 Available</span><span id="outAvailable" class="badge off">-</span></div><div class="row"><span>GPIO9 Preparing</span><span id="outPreparing" class="badge off">-</span></div><div class="row"><span>GPIO10 Charging</span><span id="outCharging" class="badge off">-</span></div><div class="row"><span>GPIO11 Faulted</span><span id="outFaulted" class="badge off">-</span></div></div></div>
 <div class="card"><h2>Aufzeichnung Ladevorgänge</h2><button class="btnCyan" onclick="downloadInvoiceLast3()">Rechnung letzte 3 herunterladen</button><button class="btnBlue" onclick="clearSessions()">Alle löschen</button><div id="sessionsList"></div></div>
 </div></div><script>
 let latest=null,hist=[],lastCh=false,maxPts=120;function badge(id,on,t='AN',f='AUS',err=false){let e=document.getElementById(id);e.textContent=on?t:f;e.className='badge '+(on?(err?'error':'on'):'off')}function draw(){let c=document.getElementById('powerChart'),x=c.getContext('2d'),w=c.width,h=c.height;x.fillStyle='#080a26';x.fillRect(0,0,w,h);x.strokeStyle='rgba(255,255,255,.12)';for(let i=0;i<=4;i++){let y=(h-30)-i*((h-50)/4);x.beginPath();x.moveTo(45,y);x.lineTo(w-15,y);x.stroke();x.fillStyle='#b8add6';x.fillText((22*i/4).toFixed(0)+' kW',8,y+4)}if(hist.length<2)return;x.beginPath();hist.forEach((p,i)=>{let xx=45+i*((w-60)/(maxPts-1)),yy=(h-30)-(p/22)*(h-50);i?x.lineTo(xx,yy):x.moveTo(xx,yy)});x.strokeStyle='#ff3ecf';x.lineWidth=3;x.stroke()}function chart(d){if(d.state!=='CHARGING'){hist=[];draw();return}hist.push(Number(d.powerKw));if(hist.length>maxPts)hist.shift();draw()}async function upd(){let d=await (await fetch('/api/status',{cache:'no-store'})).json();latest=d;chart(d);document.getElementById('deviceId').textContent=d.deviceId;document.getElementById('apSsid').textContent=d.apSsid;document.getElementById('apIp').textContent=d.apIp;document.getElementById('staIp').textContent=d.staIp;let oc=d.state==='ERROR'?'Faulted':d.state==='CHARGING'?'Charging':d.state==='CONNECTED'?'Preparing':'Available';document.getElementById('chargerState').textContent=d.state;document.getElementById('ocppStatus').textContent=oc;document.getElementById('powerKw').textContent=Number(d.powerKw).toFixed(1);document.getElementById('currentA').textContent=Number(d.currentA).toFixed(1);document.getElementById('adcValue').textContent=d.adcValue;badge('inVehicle',d.inputs.vehicleConnected,'AKTIV','AUS');badge('inStart',d.inputs.startPressed,'GEDRÜCKT','AUS');badge('inStop',d.inputs.stopPressed,'GEDRÜCKT','AUS');badge('inError',d.inputs.errorActive,'AKTIV','OK',true);badge('outAvailable',d.outputs.available);badge('outPreparing',d.outputs.preparing);badge('outCharging',d.outputs.charging);badge('outFaulted',d.outputs.faulted,'AN','AUS',true);badge('activeState',d.session.active,'AKTIV','INAKTIV');badge('stateIsCharging',d.session.stateIsCharging,'JA','NEIN');document.getElementById('activeStart').textContent=d.session.active?d.session.startTime:'-';document.getElementById('activeDuration').textContent=d.session.activeDurationSeconds;document.getElementById('activeEnergy').textContent=Number(d.session.activeEnergyKwh).toFixed(3);document.getElementById('activeCost').textContent=Number(d.session.activeCostEur).toFixed(3);let list=document.getElementById('sessionsList');list.innerHTML='';d.session.history.slice().reverse().forEach(s=>{let div=document.createElement('div');div.className='step active';div.innerHTML=`<div class="dot"></div><div><b>Ladevorgang #${s.id}</b><br>${s.startTime} bis ${s.endTime}</div><div class="desc">${Number(s.energyKwh).toFixed(3)} kWh<br>${Number(s.costEur).toFixed(3)} EUR<br><button class="btnPink" onclick="delSession(${s.id})">Löschen</button></div>`;list.appendChild(div)})}
-async function delSession(id){await fetch('/api/session/delete?id='+id);upd()}async function clearSessions(){await fetch('/api/session/clear');upd()}function downloadInvoiceLast3(){if(!latest||!latest.session.history.length){alert('Keine Ladevorgänge vorhanden');return}let arr=latest.session.history.slice(-3),totE=0,totC=0,rows=arr.map(s=>{totE+=Number(s.energyKwh);totC+=Number(s.costEur);return `<tr><td>#${s.id}</td><td>${s.startTime}</td><td>${s.endTime}</td><td>${Number(s.energyKwh).toFixed(3)} kWh</td><td>5.00 EUR/kWh</td><td>${Number(s.costEur).toFixed(2)} EUR</td></tr>`}).join('');let html=`<html><body><h1>chargecloud Glow Challenge Rechnung</h1><table border="1" cellspacing="0" cellpadding="6"><tr><th>ID</th><th>Start</th><th>Ende</th><th>Verbrauch</th><th>Preis</th><th>Betrag</th></tr>${rows}</table><h2>Gesamt: ${totE.toFixed(3)} kWh / ${totC.toFixed(2)} EUR</h2></body></html>`;let a=document.createElement('a');a.href=URL.createObjectURL(new Blob([html],{type:'text/html'}));a.download='glow-challenge-rechnung-letzte-3.html';a.click()}async function saveBackendCfg(){await fetch(`/api/backend/save?url=${encodeURIComponent(document.getElementById('cfgUrl').value)}&cbid=${encodeURIComponent(document.getElementById('cfgCbid').value)}`);alert('Gespeichert. Controller startet neu.')}setInterval(upd,500);upd();
+async function delSession(id){await fetch('/api/session/delete?id='+id);upd()}async function clearSessions(){await fetch('/api/session/clear');upd()}function downloadInvoiceLast3(){if(!latest||!latest.session.history.length){alert('Keine Ladevorgänge vorhanden');return}let arr=latest.session.history.slice(-3),totE=0,totC=0,rows=arr.map(s=>{totE+=Number(s.energyKwh);totC+=Number(s.costEur);return `<tr><td>#${s.id}</td><td>${s.startTime}</td><td>${s.endTime}</td><td>${Number(s.energyKwh).toFixed(3)} kWh</td><td>5.00 EUR/kWh</td><td>${Number(s.costEur).toFixed(2)} EUR</td></tr>`}).join('');let html=`<html><body><h1>chargecloud Glow Challenge Rechnung</h1><table border="1" cellspacing="0" cellpadding="6"><tr><th>ID</th><th>Start</th><th>Ende</th><th>Verbrauch</th><th>Preis</th><th>Betrag</th></tr>${rows}</table><h2>Gesamt: ${totE.toFixed(3)} kWh / ${totC.toFixed(2)} EUR</h2></body></html>`;let a=document.createElement('a');a.href=URL.createObjectURL(new Blob([html],{type:'text/html'}));a.download='glow-challenge-rechnung-letzte-3.html';a.click()}setInterval(upd,500);upd();
 </script></body></html>
 )rawliteral"; }
 
@@ -278,12 +246,12 @@ void handleStatus(){
   j += "]}}"; server.send(200,"application/json",j);
 }
 
-void setupWeb(){ server.on("/",[](){server.send(200,"text/html",htmlPage());}); server.on("/api/status",handleStatus); server.on("/api/session/delete",[](){ if(server.hasArg("id")) deleteSession(server.arg("id").toInt()); server.send(200,"application/json","{\"ok\":true}");}); server.on("/api/session/clear",[](){clearSessions(); server.send(200,"application/json","{\"ok\":true}");}); server.on("/api/backend/save",[](){ saveBackendConfig(server.arg("url"), server.arg("cbid")); server.send(200,"application/json","{\"ok\":true}"); delay(300); ESP.restart(); }); server.begin(); }
+void setupWeb(){ server.on("/",[](){server.send(200,"text/html",htmlPage());}); server.on("/api/status",handleStatus); server.on("/api/session/delete",[](){ if(server.hasArg("id")) deleteSession(server.arg("id").toInt()); server.send(200,"application/json","{\"ok\":true}");}); server.on("/api/session/clear",[](){clearSessions(); server.send(200,"application/json","{\"ok\":true}");}); server.begin(); }
 
 void setup(){ Serial.begin(115200); delay(300); if(NEOPIXEL_ENABLED){ pixel.begin(); pixel.clear(); pixel.show(); } pinMode(PIN_VEHICLE_CONNECTED,INPUT_PULLUP); pinMode(PIN_START_AUTH,INPUT_PULLUP); pinMode(PIN_STOP,INPUT_PULLUP); pinMode(PIN_ERROR,INPUT_PULLUP); pinMode(PIN_POWER_POTI,INPUT); pinMode(LED_AVAILABLE,OUTPUT); pinMode(LED_PREPARING,OUTPUT); pinMode(LED_CHARGING,OUTPUT); pinMode(LED_FAULTED,OUTPUT); analogReadResolution(12); loadSessions(); setupWiFi(); setupBackend(); setupWeb(); updateLeds(); }
 
 void loop(){
-  server.handleClient(); backendWs.loop(); if(backendConnected && millis()-lastHeartbeatMillis>=HEARTBEAT_INTERVAL_MS){ lastHeartbeatMillis=millis(); sendBackendEvent("Heartbeat"); }
+  server.handleClient(); backendWs.loop();
   bool vehicle=updateDebounced(inVehicle), start=updateDebounced(inStart), stop=updateDebounced(inStop), err=updateDebounced(inError);
   bool startEvent=start && !lastStartStable; bool stopEvent=stop && !lastStopStable; lastStartStable=start; lastStopStable=stop;
   int adc=analogRead(PIN_POWER_POTI); float kw=adcToPowerKw(adc);
