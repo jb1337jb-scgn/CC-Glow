@@ -3,6 +3,7 @@
 #include <WebServer.h>
 #include <time.h>
 #include <Adafruit_NeoPixel.h>
+#include <Preferences.h>
 
 enum ChargerState {
   IDLE,
@@ -20,8 +21,10 @@ const char* STA_PASSWORD = "internet";
 const char* AP_PASSWORD = "chargecloud"; // mindestens 8 Zeichen
 String deviceId;
 String apSsid;
+String currentDateTimeString();
 
 WebServer server(80);
+Preferences prefs;
 
 #define NEOPIXEL_PIN 48
 #define NEOPIXEL_COUNT 1
@@ -33,6 +36,7 @@ const int MAX_SESSIONS = 10;
 
 struct ChargeSession {
   bool valid;
+  uint32_t id;
   String startTime;
   String endTime;
   float energyKwh;
@@ -41,11 +45,33 @@ struct ChargeSession {
 
 ChargeSession sessions[MAX_SESSIONS];
 int sessionCount = 0;
+uint32_t nextSessionId = 1;
 bool sessionActive = false;
 String activeSessionStartTime = "";
 unsigned long lastEnergyMillis = 0;
 float activeEnergyKwh = 0.0f;
 ChargerState previousState = IDLE;
+
+const int MAX_DEBUG_LOGS = 30;
+String debugLogs[MAX_DEBUG_LOGS];
+int debugLogCount = 0;
+
+bool lastVehicleConnected = false;
+bool lastStartPressed = false;
+bool lastStopPressed = false;
+bool lastErrorActive = false;
+ChargerState lastLoggedState = IDLE;
+
+void addDebugLog(const String& msg) {
+  String line = currentDateTimeString() + " | " + msg;
+  Serial.println(line);
+  if (debugLogCount < MAX_DEBUG_LOGS) {
+    debugLogs[debugLogCount++] = line;
+  } else {
+    for (int i = 1; i < MAX_DEBUG_LOGS; i++) debugLogs[i - 1] = debugLogs[i];
+    debugLogs[MAX_DEBUG_LOGS - 1] = line;
+  }
+}
 
 // ESP32-S3 Ladestations-Simulation
 // Verwendet GPIO3 bis GPIO11. GPIO1 und GPIO2 bleiben frei.
@@ -68,6 +94,30 @@ unsigned long lastPowerPrint = 0;
 
 bool readActiveLow(int pin) {
   return digitalRead(pin) == LOW;
+}
+
+const unsigned long DEBOUNCE_MS = 50;
+struct DebouncedInput {
+  int pin;
+  bool stableState;
+  bool lastRawState;
+  unsigned long lastChange;
+};
+DebouncedInput inputVehicle = {PIN_VEHICLE_CONNECTED, false, false, 0};
+DebouncedInput inputStart   = {PIN_START_AUTH, false, false, 0};
+DebouncedInput inputStop    = {PIN_STOP, false, false, 0};
+DebouncedInput inputError   = {PIN_ERROR, false, false, 0};
+
+bool updateDebouncedInput(DebouncedInput &input) {
+  bool rawState = digitalRead(input.pin) == LOW;
+  if (rawState != input.lastRawState) {
+    input.lastChange = millis();
+    input.lastRawState = rawState;
+  }
+  if ((millis() - input.lastChange) >= DEBOUNCE_MS) {
+    input.stableState = rawState;
+  }
+  return input.stableState;
 }
 
 void setAllLedsOff() {
@@ -157,9 +207,61 @@ void setupTimeSync() {
   Serial.println("Zeitsynchronisation gestartet");
 }
 
+void saveSessions() {
+  prefs.begin("sessions", false);
+  prefs.putUInt("nextId", nextSessionId);
+  prefs.putInt("count", sessionCount);
+  for (int i = 0; i < sessionCount; i++) {
+    String prefix = "s" + String(i) + "_";
+    prefs.putUInt((prefix + "id").c_str(), sessions[i].id);
+    prefs.putString((prefix + "st").c_str(), sessions[i].startTime);
+    prefs.putString((prefix + "et").c_str(), sessions[i].endTime);
+    prefs.putFloat((prefix + "kwh").c_str(), sessions[i].energyKwh);
+    prefs.putFloat((prefix + "eur").c_str(), sessions[i].costEur);
+  }
+  prefs.end();
+}
+
+void loadSessions() {
+  prefs.begin("sessions", true);
+  nextSessionId = prefs.getUInt("nextId", 1);
+  sessionCount = prefs.getInt("count", 0);
+  if (sessionCount < 0) sessionCount = 0;
+  if (sessionCount > MAX_SESSIONS) sessionCount = MAX_SESSIONS;
+  for (int i = 0; i < sessionCount; i++) {
+    String prefix = "s" + String(i) + "_";
+    sessions[i].valid = true;
+    sessions[i].id = prefs.getUInt((prefix + "id").c_str(), i + 1);
+    sessions[i].startTime = prefs.getString((prefix + "st").c_str(), "-");
+    sessions[i].endTime = prefs.getString((prefix + "et").c_str(), "-");
+    sessions[i].energyKwh = prefs.getFloat((prefix + "kwh").c_str(), 0.0f);
+    sessions[i].costEur = prefs.getFloat((prefix + "eur").c_str(), 0.0f);
+  }
+  prefs.end();
+}
+
+void deleteSessionById(uint32_t id) {
+  int idx = -1;
+  for (int i = 0; i < sessionCount; i++) {
+    if (sessions[i].id == id) { idx = i; break; }
+  }
+  if (idx < 0) return;
+  for (int i = idx + 1; i < sessionCount; i++) sessions[i - 1] = sessions[i];
+  sessionCount--;
+  saveSessions();
+  addDebugLog("SESSION DELETE | id=" + String(id));
+}
+
+void clearSessions() {
+  sessionCount = 0;
+  saveSessions();
+  addDebugLog("SESSION CLEAR | all completed sessions deleted");
+}
+
 void addCompletedSession(const String& startTime, const String& endTime, float energyKwh) {
   ChargeSession cs;
   cs.valid = true;
+  cs.id = nextSessionId++;
   cs.startTime = startTime;
   cs.endTime = endTime;
   cs.energyKwh = energyKwh;
@@ -171,6 +273,7 @@ void addCompletedSession(const String& startTime, const String& endTime, float e
     for (int i = 1; i < MAX_SESSIONS; i++) sessions[i - 1] = sessions[i];
     sessions[MAX_SESSIONS - 1] = cs;
   }
+  saveSessions();
 }
 
 void startChargeSession() {
@@ -179,7 +282,7 @@ void startChargeSession() {
   activeSessionStartTime = currentDateTimeString();
   activeEnergyKwh = 0.0f;
   lastEnergyMillis = millis();
-  Serial.println("Ladesession gestartet: " + activeSessionStartTime);
+  addDebugLog("SESSION START | start=" + activeSessionStartTime);
 }
 
 void stopChargeSession() {
@@ -187,13 +290,7 @@ void stopChargeSession() {
   String endTime = currentDateTimeString();
   addCompletedSession(activeSessionStartTime, endTime, activeEnergyKwh);
   sessionActive = false;
-  Serial.print("Ladesession beendet: ");
-  Serial.print(endTime);
-  Serial.print(" | Energie: ");
-  Serial.print(activeEnergyKwh, 3);
-  Serial.print(" kWh | Kosten: ");
-  Serial.print(activeEnergyKwh * ENERGY_PRICE_EUR_PER_KWH, 2);
-  Serial.println(" EUR");
+  addDebugLog("SESSION STOP | end=" + endTime + " | energy=" + String(activeEnergyKwh, 4) + " kWh | cost=" + String(activeEnergyKwh * ENERGY_PRICE_EUR_PER_KWH, 3) + " EUR");
 }
 
 void updateEnergy(float powerKw, bool force = false) {
@@ -370,11 +467,17 @@ String htmlPage() {
 
       <div class="card">
         <h2>Aufzeichnung Ladevorgaenge</h2>
+        <button onclick="clearSessions()" style="background:#367cff;color:white;border:0;border-radius:8px;padding:7px 10px;margin-bottom:10px;">Alle abgeschlossenen Ladevorgaenge loeschen</button>
         <div class="row"><span>Aktive Session Start</span><span id="activeStart" class="value">-</span></div>
         <div class="row"><span>Aktiver Verbrauch</span><span><span id="activeEnergy" class="value">0.000</span> kWh</span></div>
         <div class="row"><span>Aktive Kosten</span><span><span id="activeCost" class="value">0.00</span> EUR</span></div>
         <div id="sessionsList" class="ocpp"></div>
       </div>
+      <div class="card">
+        <h2>Terminal / Debug</h2>
+        <pre id="debugTerminal" style="min-height:220px; max-height:320px; overflow:auto; background:#050718; color:#7CFFCB; padding:14px; border-radius:12px; border:1px solid rgba(0,217,255,.25); font-family:monospace; font-size:12px; white-space:pre-wrap;">Warte auf Debug-Daten...</pre>
+      </div>
+
     <div class="footer">Aktualisierung alle 500 ms. AP: <code>http://192.168.4.1</code></div>
   </div>
 
@@ -500,9 +603,15 @@ async function updateStatus() {
       data.session.history.slice().reverse().forEach((s, idx) => {
         const div = document.createElement("div");
         div.className = "step active";
-        div.innerHTML = `<div class="dot"></div><div><div class="name">Session ${data.session.history.length - idx}</div><div>${s.startTime} bis ${s.endTime}</div></div><div class="desc">${Number(s.energyKwh).toFixed(3)} kWh<br>${Number(s.costEur).toFixed(3)} EUR</div>`;
+        div.innerHTML = `<div class="dot"></div><div><div class="name">Ladevorgang #${s.id}</div><div>${s.startTime} bis ${s.endTime}</div></div><div class="desc">${Number(s.energyKwh).toFixed(3)} kWh<br>${Number(s.costEur).toFixed(3)} EUR<br><button onclick="deleteSession(${s.id})" style="margin-top:6px;background:#ff3ecf;color:white;border:0;border-radius:8px;padding:5px 8px;">Loeschen</button></div>`;
         list.appendChild(div);
       });
+    }
+
+    const term = document.getElementById("debugTerminal");
+    if (term && data.debugLog) {
+      term.textContent = data.debugLog.join("\n");
+      term.scrollTop = term.scrollHeight;
     }
 
     setStep("stepBoot", true);
@@ -515,6 +624,15 @@ async function updateStatus() {
     setStep("stepFault", ocpp === "Faulted", true);
   } catch (e) { console.log("Update fehlgeschlagen", e); }
 }
+async function deleteSession(id) {
+  await fetch("/api/session/delete?id=" + encodeURIComponent(id), { cache: "no-store" });
+  updateStatus();
+}
+async function clearSessions() {
+  await fetch("/api/session/clear", { cache: "no-store" });
+  updateStatus();
+}
+
 setInterval(updateStatus, 500);
 updateStatus();
 </script>
@@ -525,10 +643,10 @@ updateStatus();
 }
 
 void handleStatusApi() {
-  bool vehicleConnected = readActiveLow(PIN_VEHICLE_CONNECTED);
-  bool startPressed     = readActiveLow(PIN_START_AUTH);
-  bool stopPressed      = readActiveLow(PIN_STOP);
-  bool errorActive      = readActiveLow(PIN_ERROR);
+  bool vehicleConnected = updateDebouncedInput(inputVehicle);
+  bool startPressed     = updateDebouncedInput(inputStart);
+  bool stopPressed      = updateDebouncedInput(inputStop);
+  bool errorActive      = updateDebouncedInput(inputError);
 
   int adcValue = readPowerAdc();
   float powerKw = adcToPowerKw(adcValue);
@@ -557,7 +675,16 @@ void handleStatusApi() {
   json += "\"preparing\":" + String(digitalRead(LED_PREPARING) ? "true" : "false") + ",";
   json += "\"charging\":" + String(digitalRead(LED_CHARGING) ? "true" : "false") + ",";
   json += "\"faulted\":" + String(digitalRead(LED_FAULTED) ? "true" : "false");
-  json += "}";
+  json += "},";
+  json += "\"debugLog\":[";
+  for (int i = 0; i < debugLogCount; i++) {
+    if (i > 0) json += ",";
+    String line = debugLogs[i];
+    line.replace("\\", "\\\\");
+    line.replace("\"", "\\\"");
+    json += "\"" + line + "\"";
+  }
+  json += "]";
   json += "}";
 
   server.send(200, "application/json", json);
@@ -568,6 +695,14 @@ void setupWebServer() {
     server.send(200, "text/html", htmlPage());
   });
   server.on("/api/status", handleStatusApi);
+  server.on("/api/session/delete", []() {
+    if (server.hasArg("id")) deleteSessionById((uint32_t) server.arg("id").toInt());
+    server.send(200, "application/json", "{"ok":true}");
+  });
+  server.on("/api/session/clear", []() {
+    clearSessions();
+    server.send(200, "application/json", "{"ok":true}");
+  });
   server.begin();
   Serial.println("Webserver gestartet");
 }
@@ -617,6 +752,8 @@ void setup() {
 
   analogReadResolution(12);
   updateLeds();
+  loadSessions();
+  addDebugLog("BOOT | sessions loaded=" + String(sessionCount) + " nextId=" + String(nextSessionId));
 
   setupWiFiApSta();
   setupTimeSync();
@@ -637,6 +774,23 @@ void loop() {
   bool stopPressed      = readActiveLow(PIN_STOP);
   bool errorActive      = readActiveLow(PIN_ERROR);
 
+  if (vehicleConnected != lastVehicleConnected) {
+    addDebugLog(String("GPIO4 Fahrzeug verbunden -> ") + (vehicleConnected ? "AKTIV" : "AUS"));
+    lastVehicleConnected = vehicleConnected;
+  }
+  if (startPressed != lastStartPressed) {
+    addDebugLog(String("GPIO5 Start/Auth -> ") + (startPressed ? "GEDRUECKT" : "AUS"));
+    lastStartPressed = startPressed;
+  }
+  if (stopPressed != lastStopPressed) {
+    addDebugLog(String("GPIO6 Stop -> ") + (stopPressed ? "GEDRUECKT" : "AUS"));
+    lastStopPressed = stopPressed;
+  }
+  if (errorActive != lastErrorActive) {
+    addDebugLog(String("GPIO7 Fehler -> ") + (errorActive ? "AKTIV" : "OK"));
+    lastErrorActive = errorActive;
+  }
+
   float powerKw = readChargingPowerKw();
   float currentA = powerKwToCurrentA(powerKw);
 
@@ -647,20 +801,20 @@ void loop() {
       case IDLE:
         if (vehicleConnected) {
           state = CONNECTED;
-          Serial.println("Fahrzeug verbunden");
+          addDebugLog("STATE | Fahrzeug verbunden -> CONNECTED/PREPARING");
         }
         break;
 
       case CONNECTED:
         if (!vehicleConnected) {
           state = IDLE;
-          Serial.println("Fahrzeug getrennt - Ladevorgang beendet");
+          addDebugLog("STATE | Fahrzeug getrennt -> IDLE/AVAILABLE");
         } else if (startPressed) {
           state = AUTHORIZED;
-          Serial.println("Autorisiert");
+          addDebugLog("OCPP | Authorize");
           delay(300);
           state = CHARGING;
-          Serial.println("Ladevorgang gestartet");
+          addDebugLog("OCPP | StartTransaction -> CHARGING");
         }
         break;
 
@@ -671,10 +825,10 @@ void loop() {
       case CHARGING:
         if (!vehicleConnected) {
           state = IDLE;
-          Serial.println("Fahrzeug getrennt - Ladevorgang beendet");
+          addDebugLog("STATE | Fahrzeug getrennt -> IDLE/AVAILABLE");
         } else if (stopPressed) {
           state = CONNECTED;
-          Serial.println("Ladevorgang gestoppt");
+          addDebugLog("OCPP | StopTransaction -> CONNECTED/PREPARING");
         }
         break;
 
@@ -696,6 +850,11 @@ void loop() {
     } else {
       lastEnergyMillis = millis();
     }
+  }
+
+  if (state != lastLoggedState) {
+    addDebugLog(String("STATUS | ") + stateName(lastLoggedState) + " -> " + stateName(state));
+    lastLoggedState = state;
   }
 
   updateLeds();
