@@ -28,6 +28,7 @@ WebServer server(80);
 Adafruit_NeoPixel pixel(NEOPIXEL_COUNT, NEOPIXEL_PIN, NEO_GRB + NEO_KHZ800);
 
 const float ENERGY_PRICE_EUR_PER_KWH = 5.00f;
+const unsigned long METER_INTERVAL_MS = 10000;
 const int MAX_SESSIONS = 10;
 
 struct ChargeSession {
@@ -195,15 +196,17 @@ void stopChargeSession() {
   Serial.println(" EUR");
 }
 
-void updateEnergy(float powerKw) {
+void updateEnergy(float powerKw, bool force = false) {
   unsigned long now = millis();
   if (!sessionActive) {
     lastEnergyMillis = now;
     return;
   }
-  float hours = (now - lastEnergyMillis) / 3600000.0f;
-  activeEnergyKwh += powerKw * hours;
-  lastEnergyMillis = now;
+  if (force || now - lastEnergyMillis >= METER_INTERVAL_MS) {
+    float hours = (now - lastEnergyMillis) / 3600000.0f;
+    activeEnergyKwh += powerKw * hours;
+    lastEnergyMillis = now;
+  }
 }
 
 void setupWiFiApSta() {
@@ -212,9 +215,22 @@ void setupWiFiApSta() {
   apSsid = "EVSE-SIM-" + shortId;
 
   WiFi.mode(WIFI_AP_STA);
+  WiFi.setSleep(false);
 
   Serial.println();
   Serial.println("Starte WiFi AP+STA Modus");
+
+  bool apStarted = WiFi.softAP(apSsid.c_str(), AP_PASSWORD, 1, false, 4);
+  if (apStarted) {
+    Serial.print("Lokaler AP gestartet: ");
+    Serial.println(apSsid);
+    Serial.print("AP Passwort: ");
+    Serial.println(AP_PASSWORD);
+    Serial.print("AP IP: ");
+    Serial.println(WiFi.softAPIP());
+  } else {
+    Serial.println("Fehler beim Starten des lokalen AP");
+  }
 
   WiFi.begin(STA_SSID, STA_PASSWORD);
   Serial.print("Verbinde mit Router SSID: ");
@@ -233,18 +249,6 @@ void setupWiFiApSta() {
     Serial.println(WiFi.localIP());
   } else {
     Serial.println("STA nicht verbunden - AP bleibt trotzdem aktiv");
-  }
-
-  bool apStarted = WiFi.softAP(apSsid.c_str(), AP_PASSWORD);
-  if (apStarted) {
-    Serial.print("Lokaler AP gestartet: ");
-    Serial.println(apSsid);
-    Serial.print("AP Passwort: ");
-    Serial.println(AP_PASSWORD);
-    Serial.print("AP IP: ");
-    Serial.println(WiFi.softAPIP());
-  } else {
-    Serial.println("Fehler beim Starten des lokalen AP");
   }
 
   Serial.print("Geraete-ID: ");
@@ -291,6 +295,7 @@ String htmlPage() {
     .step .name { font-weight:700; }
     .step .desc { color:var(--muted); font-size:.9rem; margin-left:auto; text-align:right; }
     .footer { margin-top:18px; color:var(--muted); font-size:.85rem; }
+    canvas { width:100%; height:260px; background:rgba(8,10,38,.72); border:1px solid rgba(0,217,255,.18); border-radius:14px; }
     code { color: var(--cyan); }
   </style>
 </head>
@@ -321,6 +326,12 @@ String htmlPage() {
           <div class="row"><span>Strom 3-phasig</span><span><span id="currentA" class="value">0.0</span> A</span></div>
           <div class="powerbar"><div id="powerFill" class="powerfill"></div></div>
         </div>
+      </div>
+
+      <div class="card">
+        <h2>Ladeleistung Verlauf</h2>
+        <canvas id="powerChart" width="900" height="260"></canvas>
+        <div class="subtitle">Live-Verlauf waehrend CHARGING. Reset bei inaktivem Ladevorgang.</div>
       </div>
 
       <div class="card">
@@ -368,6 +379,60 @@ String htmlPage() {
   </div>
 
 <script>
+let powerHistory = [];
+let lastCharging = false;
+const maxPoints = 120;
+
+function drawPowerChart() {
+  const canvas = document.getElementById("powerChart");
+  if (!canvas) return;
+  const ctx = canvas.getContext("2d");
+  const w = canvas.width;
+  const h = canvas.height;
+  ctx.clearRect(0,0,w,h);
+  ctx.fillStyle = "#080a26";
+  ctx.fillRect(0,0,w,h);
+  ctx.strokeStyle = "rgba(255,255,255,0.12)";
+  ctx.lineWidth = 1;
+  for (let i=0;i<=4;i++) {
+    const y = (h-30) - i*((h-50)/4);
+    ctx.beginPath(); ctx.moveTo(45,y); ctx.lineTo(w-15,y); ctx.stroke();
+    ctx.fillStyle = "#b8add6"; ctx.font = "12px Arial";
+    ctx.fillText((22*i/4).toFixed(0)+" kW", 8, y+4);
+  }
+  ctx.strokeStyle = "rgba(0,217,255,0.8)";
+  ctx.beginPath(); ctx.moveTo(45,15); ctx.lineTo(45,h-30); ctx.lineTo(w-15,h-30); ctx.stroke();
+  if (powerHistory.length < 2) {
+    ctx.fillStyle = "#b8add6"; ctx.font = "14px Arial";
+    ctx.fillText("Warte auf CHARGING...", 55, 35);
+    return;
+  }
+  ctx.beginPath();
+  powerHistory.forEach((p, index) => {
+    const x = 45 + index*((w-60)/(maxPoints-1));
+    const y = (h-30) - (p.powerKw/22.0)*(h-50);
+    if (index === 0) ctx.moveTo(x,y); else ctx.lineTo(x,y);
+  });
+  ctx.strokeStyle = "rgba(0,217,255,0.45)"; ctx.lineWidth = 8; ctx.stroke();
+  ctx.strokeStyle = "#ff3ecf"; ctx.lineWidth = 3; ctx.stroke();
+  const last = powerHistory[powerHistory.length-1];
+  ctx.fillStyle = "#f7f2ff"; ctx.font = "14px Arial";
+  ctx.fillText("Aktuell: " + last.powerKw.toFixed(1) + " kW", 55, h-8);
+}
+
+function updatePowerChart(data) {
+  const isCharging = data.state === "CHARGING";
+  if (!isCharging) {
+    if (lastCharging || powerHistory.length) { powerHistory = []; drawPowerChart(); }
+    lastCharging = false;
+    return;
+  }
+  lastCharging = true;
+  powerHistory.push({ t: Date.now(), powerKw: Number(data.powerKw) });
+  if (powerHistory.length > maxPoints) powerHistory.shift();
+  drawPowerChart();
+}
+
 function setBadge(id, active, trueText = "AN", falseText = "AUS") {
   const el = document.getElementById(id);
   el.textContent = active ? trueText : falseText;
@@ -393,6 +458,7 @@ async function updateStatus() {
     const res = await fetch("/api/status", { cache: "no-store" });
     const data = await res.json();
     const ocpp = deriveOcpp(data);
+    updatePowerChart(data);
 
     document.getElementById("deviceId").textContent = data.deviceId;
     document.getElementById("apSsid").textContent = data.apSsid;
@@ -588,14 +654,12 @@ void loop() {
       case CONNECTED:
         if (!vehicleConnected) {
           state = IDLE;
-          Serial.println("Fahrzeug getrennt");
+          Serial.println("Fahrzeug getrennt - Ladevorgang beendet");
         } else if (startPressed) {
           state = AUTHORIZED;
           Serial.println("Autorisiert");
           delay(300);
           state = CHARGING;
-          startChargeSession();
-          previousState = CHARGING;
           Serial.println("Ladevorgang gestartet");
         }
         break;
@@ -606,16 +670,10 @@ void loop() {
 
       case CHARGING:
         if (!vehicleConnected) {
-          updateEnergy(powerKw);
-          stopChargeSession();
           state = IDLE;
-          previousState = IDLE;
-          Serial.println("Fahrzeug getrennt");
+          Serial.println("Fahrzeug getrennt - Ladevorgang beendet");
         } else if (stopPressed) {
-          updateEnergy(powerKw);
-          stopChargeSession();
           state = CONNECTED;
-          previousState = CONNECTED;
           Serial.println("Ladevorgang gestoppt");
         }
         break;
@@ -626,14 +684,19 @@ void loop() {
     }
   }
 
-  if (state == CHARGING && previousState != CHARGING) {
-    startChargeSession();
+  if (state == CHARGING) {
+    if (!sessionActive) {
+      startChargeSession();
+    }
+    updateEnergy(powerKw);
+  } else {
+    if (sessionActive) {
+      updateEnergy(powerKw, true);
+      stopChargeSession();
+    } else {
+      lastEnergyMillis = millis();
+    }
   }
-  if (state != CHARGING && previousState == CHARGING) {
-    stopChargeSession();
-  }
-  updateEnergy(powerKw);
-  previousState = state;
 
   updateLeds();
   updateNeoPixel();
