@@ -1,97 +1,81 @@
-# ESP32-S3 Local Wallbox Simulator v8
+# ESP32-S3 Ladestations-Simulation
 
-This version runs a complete local charging session simulation in the ESP32 web interface. A real OCPP backend connection is optional.
+Firmware-Projekt fuer eine einfache Ladestations-Simulation mit ESP32-S3-N16R8.
 
-Features:
-- Local web UI for Plugged, Authorisation, Start, Charging, Stop
-- Consumption in kWh
-- Cost calculation at 0.50 EUR/kWh
-- Status/event log similar to backend messages
-- Downloadable billing JSON and printable invoice view
-- Optional backend URL field kept for later OCPP use
+## Funktionen
 
-Default WiFi station credentials in `src/main.cpp`:
-- SSID: `internet`
-- Password: `internet`
+- Fahrzeug verbunden per Schalter
+- Start/Autorisierung per Taster
+- Stop per Taster
+- Fehler per Schalter/Taster
+- Ladeleistung per Poti von 0 bis 22 kW
+- Statusanzeige ueber LEDs
+- Serielle Ausgabe mit Status, kW und berechnetem 3-phasigem Strom
 
-The ESP also starts an access point:
-- SSID: `Wallbox-LOCAL-XXXXXX`
-- Password: `chargecloud`
+## Pinbelegung
 
+| Funktion | GPIO |
+|---|---:|
+| Poti Ladeleistung 0-22 kW | GPIO3 |
+| Fahrzeug verbunden | GPIO4 |
+| Start / Autorisierung | GPIO5 |
+| Stop | GPIO6 |
+| Fehler | GPIO7 |
+| LED Bereit | GPIO8 |
+| LED Verbunden | GPIO9 |
+| LED Laedt | GPIO10 |
+| LED Fehler | GPIO11 |
 
-## v9 GPIO + NeoPixel + Status LEDs
+GPIO1 und GPIO2 werden nicht verwendet.
 
-GPIO inputs are active LOW with `INPUT_PULLUP` and are intended for the 3.3V side only. Do not connect 5V to ESP32 GPIOs.
+## Verdrahtung
 
-Inputs trigger actions:
-- GPIO 4: Ladefreigabe indicator for built-in NeoPixel, no start by itself
-- GPIO 5: Plug / Unplug toggle
-- GPIO 6: Authorize
-- GPIO 7: Start
-- GPIO 15: Stop
+### Poti
 
-Status LED outputs:
-- GPIO 16: Available, blue
-- GPIO 17: Plugged, yellow
-- GPIO 18: Authorized, cyan
-- GPIO 8: Charging, green
-- GPIO 9: Faulted, red
+10 kOhm empfohlen.
 
-The web interface shows GPIO input states and LED states. Clicking status indicators in the interface does not trigger actions; only the existing control buttons and physical GPIO inputs do.
+```text
+3V3   ---- Poti aussen
+GPIO3 ---- Poti Mitte / Schleifer
+GND   ---- Poti aussen
+```
 
+### Schalter/Taster
 
-## v10 Potentiometer for charging power
+Die Firmware nutzt interne Pullups. Daher jeweils nach GND schalten:
 
-A potentiometer on GPIO 1 controls simulated charging power from 0 to 22 kW.
+```text
+GPIO4 ---- Schalter ---- GND
+GPIO5 ---- Taster   ---- GND
+GPIO6 ---- Taster   ---- GND
+GPIO7 ---- Schalter ---- GND
+```
 
-Wiring on the ESP32 3.3V side only:
-- Potentiometer end 1: 3.3V
-- Potentiometer end 2: GND
-- Potentiometer wiper: GPIO 1 / ADC
+### LEDs
 
-Never connect 5V to the ADC/GPIO pin. The current power is shown in the web interface and used for the kWh calculation while charging.
+```text
+GPIO8  ---- 330 Ohm ---- LED ---- GND
+GPIO9  ---- 330 Ohm ---- LED ---- GND
+GPIO10 ---- 330 Ohm ---- LED ---- GND
+GPIO11 ---- 330 Ohm ---- LED ---- GND
+```
 
+## Build mit PlatformIO
 
-## v11 Error switch
+1. ZIP entpacken
+2. Ordner in VS Code mit PlatformIO oeffnen
+3. Build ausfuehren
+4. Upload auf ESP32-S3
+5. Seriellen Monitor mit 115200 Baud starten
 
-Adds an active-LOW error switch on GPIO 10 using `INPUT_PULLUP`.
+Alternativ per CLI:
 
-- GPIO 10 LOW: Faulted active, charging is stopped, red status LED on
-- GPIO 10 HIGH: fault cleared
+```bash
+pio run
+pio run --target upload
+pio device monitor -b 115200
+```
 
-Use only 3.3V-side wiring: GPIO 10 to switch to GND. Do not connect 5V.
+## Hinweis
 
-
-## v12 MicroOcpp v1.2.0 optional backend
-
-This version adds `matth-x/MicroOcpp@1.2.0` to PlatformIO and keeps the local-first simulator.
-
-Backend URL supports both:
-- `ws://...` for lab/VPN/internal tests
-- `wss://...` for TLS-secured backends
-
-For `wss://`, make sure time/NTP and certificate trust are correct. Depending on the transport adapter and backend, Basic Auth may need additional adapter-specific configuration.
-
-The local UI, GPIO inputs, status LEDs, NeoPixel, potentiometer up to 22 kW, error switch, and local billing remain available without a backend.
-
-
-## v13 real MicroOcpp communication mapping
-
-This version maps local simulator events to the MicroOcpp communication layer and logs the synchronization steps:
-
-- Plugged -> OCPP sync Preparing
-- Authorize -> OCPP sync Authorize request
-- Start -> OCPP sync StartTransaction
-- Charging -> OCPP sync MeterValues every 10 seconds
-- Stop -> OCPP sync StopTransaction
-- Error switch -> OCPP sync Faulted / fault cleared
-- Unplug -> OCPP sync Available
-
-The local simulator remains local-first. MicroOcpp v1.2.0 is initialized when backend mode is enabled and `mocpp_loop()` runs continuously. Depending on the exact CSMS and transport adapter, additional adapter-specific transaction API calls may be required for strict backend-controlled operation.
-
-
-## v13 fixed compile patch
-
-Patched for MicroOcpp v1.2.0 API:
-- `mocpp_initialize(...)` now uses the 4-argument URL overload; OCPP 1.6 is the default.
-- Removed the invalid `MicroOcpp::setConnectorPluggedInput` namespace usage. In v1.2.0 this helper is exposed as a global API function.
+Wenn dein konkretes ESP32-S3-Board nicht `esp32-s3-devkitc-1` ist, in `platformio.ini` ggf. den `board`-Eintrag anpassen.
