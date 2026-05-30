@@ -697,11 +697,11 @@ void setupWebServer() {
   server.on("/api/status", handleStatusApi);
   server.on("/api/session/delete", []() {
     if (server.hasArg("id")) deleteSessionById((uint32_t) server.arg("id").toInt());
-    server.send(200, "application/json", "{"ok":true}");
+    server.send(200, "application/json", "{\"ok\":true}");
   });
   server.on("/api/session/clear", []() {
     clearSessions();
-    server.send(200, "application/json", "{"ok":true}");
+    server.send(200, "application/json", "{\"ok\":true}");
   });
   server.begin();
   Serial.println("Webserver gestartet");
