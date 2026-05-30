@@ -2,6 +2,7 @@
 #include <WiFi.h>
 #include <WebServer.h>
 #include <time.h>
+#include <Adafruit_NeoPixel.h>
 
 enum ChargerState {
   IDLE,
@@ -22,7 +23,11 @@ String apSsid;
 
 WebServer server(80);
 
-const float ENERGY_PRICE_EUR_PER_KWH = 0.50f;
+#define NEOPIXEL_PIN 48
+#define NEOPIXEL_COUNT 1
+Adafruit_NeoPixel pixel(NEOPIXEL_COUNT, NEOPIXEL_PIN, NEO_GRB + NEO_KHZ800);
+
+const float ENERGY_PRICE_EUR_PER_KWH = 5.00f;
 const int MAX_SESSIONS = 10;
 
 struct ChargeSession {
@@ -52,10 +57,10 @@ const int PIN_STOP              = 6;  // Taster nach GND
 const int PIN_ERROR             = 7;  // Schalter/Taster nach GND
 
 // Ausgaenge
-const int LED_IDLE      = 8;
-const int LED_CONNECTED = 9;
+const int LED_AVAILABLE = 8;
+const int LED_PREPARING = 9;
 const int LED_CHARGING  = 10;
-const int LED_ERROR     = 11;
+const int LED_FAULTED   = 11;
 
 ChargerState state = IDLE;
 unsigned long lastPowerPrint = 0;
@@ -65,10 +70,10 @@ bool readActiveLow(int pin) {
 }
 
 void setAllLedsOff() {
-  digitalWrite(LED_IDLE, LOW);
-  digitalWrite(LED_CONNECTED, LOW);
+  digitalWrite(LED_AVAILABLE, LOW);
+  digitalWrite(LED_PREPARING, LOW);
   digitalWrite(LED_CHARGING, LOW);
-  digitalWrite(LED_ERROR, LOW);
+  digitalWrite(LED_FAULTED, LOW);
 }
 
 int readPowerAdc() {
@@ -105,20 +110,19 @@ void updateLeds() {
 
   switch (state) {
     case IDLE:
-      digitalWrite(LED_IDLE, HIGH);
+      digitalWrite(LED_AVAILABLE, HIGH);
       break;
     case CONNECTED:
-      digitalWrite(LED_CONNECTED, HIGH);
+      digitalWrite(LED_PREPARING, HIGH);
       break;
     case AUTHORIZED:
-      digitalWrite(LED_CONNECTED, HIGH);
-      digitalWrite(LED_IDLE, HIGH);
+      digitalWrite(LED_PREPARING, HIGH);
       break;
     case CHARGING:
       digitalWrite(LED_CHARGING, HIGH);
       break;
     case ERROR_STATE:
-      digitalWrite(LED_ERROR, HIGH);
+      digitalWrite(LED_FAULTED, HIGH);
       break;
   }
 }
@@ -344,10 +348,10 @@ String htmlPage() {
 
       <div class="card">
         <h2>Ausgaenge</h2>
-        <div class="row"><span>GPIO8 LED Bereit</span><span id="outIdle" class="badge off">-</span></div>
-        <div class="row"><span>GPIO9 LED Verbunden</span><span id="outConnected" class="badge off">-</span></div>
-        <div class="row"><span>GPIO10 LED Laedt</span><span id="outCharging" class="badge off">-</span></div>
-        <div class="row"><span>GPIO11 LED Fehler</span><span id="outError" class="badge off">-</span></div>
+        <div class="row"><span>GPIO8 Available</span><span id="outAvailable" class="badge off">-</span></div>
+        <div class="row"><span>GPIO9 Preparing</span><span id="outPreparing" class="badge off">-</span></div>
+        <div class="row"><span>GPIO10 Charging</span><span id="outCharging" class="badge off">-</span></div>
+        <div class="row"><span>GPIO11 Faulted</span><span id="outFaulted" class="badge off">-</span></div>
       </div>
     </div>
 
@@ -414,14 +418,14 @@ async function updateStatus() {
     setBadge("inStart", data.inputs.startPressed, "GEDRUECKT", "AUS");
     setBadge("inStop", data.inputs.stopPressed, "GEDRUECKT", "AUS");
     setErrorBadge("inError", data.inputs.errorActive, "AKTIV", "OK");
-    setBadge("outIdle", data.outputs.ledIdle);
-    setBadge("outConnected", data.outputs.ledConnected);
-    setBadge("outCharging", data.outputs.ledCharging);
-    setErrorBadge("outError", data.outputs.ledError, "AN", "AUS");
+    setBadge("outAvailable", data.outputs.available);
+    setBadge("outPreparing", data.outputs.preparing);
+    setBadge("outCharging", data.outputs.charging);
+    setErrorBadge("outFaulted", data.outputs.faulted, "AN", "AUS");
 
     document.getElementById("activeStart").textContent = data.session.active ? data.session.startTime : "-";
     document.getElementById("activeEnergy").textContent = Number(data.session.activeEnergyKwh).toFixed(3);
-    document.getElementById("activeCost").textContent = Number(data.session.activeCostEur).toFixed(2);
+    document.getElementById("activeCost").textContent = Number(data.session.activeCostEur).toFixed(3);
     const list = document.getElementById("sessionsList");
     list.innerHTML = "";
     if (!data.session.history.length) {
@@ -430,7 +434,7 @@ async function updateStatus() {
       data.session.history.slice().reverse().forEach((s, idx) => {
         const div = document.createElement("div");
         div.className = "step active";
-        div.innerHTML = `<div class="dot"></div><div><div class="name">Session ${data.session.history.length - idx}</div><div>${s.startTime} bis ${s.endTime}</div></div><div class="desc">${Number(s.energyKwh).toFixed(3)} kWh<br>${Number(s.costEur).toFixed(2)} EUR</div>`;
+        div.innerHTML = `<div class="dot"></div><div><div class="name">Session ${data.session.history.length - idx}</div><div>${s.startTime} bis ${s.endTime}</div></div><div class="desc">${Number(s.energyKwh).toFixed(3)} kWh<br>${Number(s.costEur).toFixed(3)} EUR</div>`;
         list.appendChild(div);
       });
     }
@@ -483,10 +487,10 @@ void handleStatusApi() {
   json += "\"errorActive\":" + String(errorActive ? "true" : "false");
   json += "},";
   json += "\"outputs\":{";
-  json += "\"ledIdle\":" + String(digitalRead(LED_IDLE) ? "true" : "false") + ",";
-  json += "\"ledConnected\":" + String(digitalRead(LED_CONNECTED) ? "true" : "false") + ",";
-  json += "\"ledCharging\":" + String(digitalRead(LED_CHARGING) ? "true" : "false") + ",";
-  json += "\"ledError\":" + String(digitalRead(LED_ERROR) ? "true" : "false");
+  json += "\"available\":" + String(digitalRead(LED_AVAILABLE) ? "true" : "false") + ",";
+  json += "\"preparing\":" + String(digitalRead(LED_PREPARING) ? "true" : "false") + ",";
+  json += "\"charging\":" + String(digitalRead(LED_CHARGING) ? "true" : "false") + ",";
+  json += "\"faulted\":" + String(digitalRead(LED_FAULTED) ? "true" : "false");
   json += "}";
   json += "}";
 
@@ -502,9 +506,37 @@ void setupWebServer() {
   Serial.println("Webserver gestartet");
 }
 
+void updateNeoPixel() {
+  static unsigned long lastBlink = 0;
+  static bool pixelOn = false;
+
+  if (state == CHARGING) {
+    if (millis() - lastBlink >= 250) {
+      lastBlink = millis();
+      pixelOn = !pixelOn;
+      if (pixelOn) {
+        pixel.setPixelColor(0, pixel.Color(0, 0, 255));
+      } else {
+        pixel.clear();
+      }
+      pixel.show();
+    }
+  } else {
+    if (pixelOn) {
+      pixelOn = false;
+    }
+    pixel.clear();
+    pixel.show();
+  }
+}
+
 void setup() {
   Serial.begin(115200);
   delay(300);
+
+  pixel.begin();
+  pixel.clear();
+  pixel.show();
 
   pinMode(PIN_VEHICLE_CONNECTED, INPUT_PULLUP);
   pinMode(PIN_START_AUTH, INPUT_PULLUP);
@@ -512,10 +544,10 @@ void setup() {
   pinMode(PIN_ERROR, INPUT_PULLUP);
   pinMode(PIN_POWER_POTI, INPUT);
 
-  pinMode(LED_IDLE, OUTPUT);
-  pinMode(LED_CONNECTED, OUTPUT);
+  pinMode(LED_AVAILABLE, OUTPUT);
+  pinMode(LED_PREPARING, OUTPUT);
   pinMode(LED_CHARGING, OUTPUT);
-  pinMode(LED_ERROR, OUTPUT);
+  pinMode(LED_FAULTED, OUTPUT);
 
   analogReadResolution(12);
   updateLeds();
@@ -562,6 +594,8 @@ void loop() {
           Serial.println("Autorisiert");
           delay(300);
           state = CHARGING;
+          startChargeSession();
+          previousState = CHARGING;
           Serial.println("Ladevorgang gestartet");
         }
         break;
@@ -572,10 +606,16 @@ void loop() {
 
       case CHARGING:
         if (!vehicleConnected) {
+          updateEnergy(powerKw);
+          stopChargeSession();
           state = IDLE;
+          previousState = IDLE;
           Serial.println("Fahrzeug getrennt");
         } else if (stopPressed) {
+          updateEnergy(powerKw);
+          stopChargeSession();
           state = CONNECTED;
+          previousState = CONNECTED;
           Serial.println("Ladevorgang gestoppt");
         }
         break;
@@ -596,6 +636,7 @@ void loop() {
   previousState = state;
 
   updateLeds();
+  updateNeoPixel();
 
   if (millis() - lastPowerPrint >= 1000) {
     lastPowerPrint = millis();
