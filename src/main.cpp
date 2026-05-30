@@ -136,6 +136,8 @@ void sendBackendStatusBoth(const String& status, const String& errorCode="NoErro
 String extractOcppUid(const String& msg);
 int extractJsonInt(const String& src, const String& key, int fallback);
 float adcToPowerKw(int adc);
+float powerKwToCurrentA(float kw);
+int extractJsonStringInt(const String& src, const String& key, int fallback);
 void backendSendResult(const String& uid,const String& payload){
   if(!backendConnected) return;
   backendWs.sendTXT("[3,\""+uid+"\","+payload+"]");
