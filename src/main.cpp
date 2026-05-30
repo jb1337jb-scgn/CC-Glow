@@ -104,7 +104,20 @@ void sendBackendEvent(const String& eventName, float powerKw=0.0f){
   else if(eventName=="Heartbeat") backendSendRaw("Heartbeat", "{}");
   else if(eventName=="Authorize") pendingAuthorizeUid=backendSendCall("Authorize", "{\"idTag\":\"CAFFEE\"}");
   else if(eventName=="StartTransaction") pendingStartUid=backendSendCall("StartTransaction", "{\"connectorId\":1,\"idTag\":\"CAFFEE\",\"meterStart\":0,\"timestamp\":\""+ts+"\"}");
-  else if(eventName=="MeterValues") { float a=powerKwToCurrentA(powerKw); backendSendRaw("MeterValues", "{\"connectorId\":1,\"transactionId\":"+String(currentTransactionId)+",\"meterValue\":[{\"timestamp\":\""+ts+"\",\"sampledValue\":[{\"value\":\""+String((int)(activeEnergyKwh*1000.0f))+"\",\"context\":\"Sample.Periodic\",\"format\":\"Raw\",\"measurand\":\"Energy.Active.Import.Register\",\"location\":\"Outlet\",\"unit\":\"Wh\"},{\"value\":\""+String((int)(powerKw*1000.0f))+"\",\"context\":\"Sample.Periodic\",\"measurand\":\"Power.Active.Import\",\"location\":\"Outlet\",\"unit\":\"W\"},{\"value\":\""+String(a,1)+"\",\"measurand\":\"Current.Import\",\"phase\":\"L1\",\"unit\":\"A\"},{\"value\":\""+String(a,1)+"\",\"measurand\":\"Current.Import\",\"phase\":\"L2\",\"unit\":\"A\"},{\"value\":\""+String(a,1)+"\",\"measurand\":\"Current.Import\",\"phase\":\"L3\",\"unit\":\"A\"},{\"value\":\"230\",\"measurand\":\"Voltage\",\"phase\":\"L1\",\"unit\":\"V\"},{\"value\":\"230\",\"measurand\":\"Voltage\",\"phase\":\"L2\",\"unit\":\"V\"},{\"value\":\"230\",\"measurand\":\"Voltage\",\"phase\":\"L3\",\"unit\":\"V\"}]}]}"); }
+  else if(eventName=="MeterValues") {
+    float a=powerKwToCurrentA(powerKw);
+    String payload = "{\"connectorId\":1,\"transactionId\":" + String(currentTransactionId) + ",\"meterValue\":[{\"timestamp\":\"" + ts + "\",\"sampledValue\":[";
+    payload += "{\"value\":\"" + String((int)(activeEnergyKwh*1000.0f)) + "\",\"context\":\"Sample.Periodic\",\"format\":\"Raw\",\"measurand\":\"Energy.Active.Import.Register\",\"location\":\"Outlet\",\"unit\":\"Wh\"},";
+    payload += "{\"value\":\"" + String((int)(powerKw*1000.0f)) + "\",\"context\":\"Sample.Periodic\",\"measurand\":\"Power.Active.Import\",\"location\":\"Outlet\",\"unit\":\"W\"},";
+    payload += "{\"value\":\"" + String(a,1) + "\",\"measurand\":\"Current.Import\",\"phase\":\"L1\",\"unit\":\"A\"},";
+    payload += "{\"value\":\"" + String(a,1) + "\",\"measurand\":\"Current.Import\",\"phase\":\"L2\",\"unit\":\"A\"},";
+    payload += "{\"value\":\"" + String(a,1) + "\",\"measurand\":\"Current.Import\",\"phase\":\"L3\",\"unit\":\"A\"},";
+    payload += "{\"value\":\"230\",\"measurand\":\"Voltage\",\"phase\":\"L1\",\"unit\":\"V\"},";
+    payload += "{\"value\":\"230\",\"measurand\":\"Voltage\",\"phase\":\"L2\",\"unit\":\"V\"},";
+    payload += "{\"value\":\"230\",\"measurand\":\"Voltage\",\"phase\":\"L3\",\"unit\":\"V\"}";
+    payload += "]}]}";
+    backendSendRaw("MeterValues", payload);
+  }
   else if(eventName=="StopTransaction") backendSendRaw("StopTransaction", "{\"transactionId\":"+String(currentTransactionId)+",\"meterStop\":"+String((int)(activeEnergyKwh*1000.0f)) + ",\"idTag\":\"CAFFEE\",\"reason\":\""+stopReason+"\",\"timestamp\":\""+ts+"\"}");
   else if(eventName=="Faulted") backendSendRaw("StatusNotification", "{\"connectorId\":1,\"errorCode\":\"OtherError\",\"status\":\"Faulted\"}");
   else { String st = eventName; backendSendRaw("StatusNotification", "{\"connectorId\":1,\"errorCode\":\"NoError\",\"status\":\""+st+"\"}"); }
@@ -120,6 +133,9 @@ void sendBackendStatusBoth(const String& status, const String& errorCode="NoErro
 
 
 
+String extractOcppUid(const String& msg);
+int extractJsonInt(const String& src, const String& key, int fallback);
+float adcToPowerKw(int adc);
 void backendSendResult(const String& uid,const String& payload){
   if(!backendConnected) return;
   backendWs.sendTXT("[3,\""+uid+"\","+payload+"]");
@@ -142,7 +158,7 @@ void handleCentralCall(const String& msg){
     backendSendResult(uid,"{\"configurationKey\":[{\"key\":\"HeartbeatInterval\",\"readonly\":false,\"value\":\""+String(heartbeatIntervalMs/1000)+"\"},{\"key\":\"MeterValueSampleInterval\",\"readonly\":false,\"value\":\"10\"},{\"key\":\"NumberOfConnectors\",\"readonly\":true,\"value\":\"1\"},{\"key\":\"AuthorizeRemoteTxRequests\",\"readonly\":false,\"value\":\"false\"},{\"key\":\"MeterValuesSampledData\",\"readonly\":false,\"value\":\"Energy.Active.Import.Register,Power.Active.Import,Current.Import,Voltage\"}],\"unknownKey\":[]}");
   }
   else if(action=="ChangeConfiguration"){
-    int sec=extractJsonInt(msg,"value",0); if(msg.indexOf("HeartbeatInterval")>=0 && sec>=30){ heartbeatIntervalMs=(unsigned long)sec*1000UL; }
+    int sec=extractJsonStringInt(msg,"value",0); if(msg.indexOf("HeartbeatInterval")>=0 && sec>=30){ heartbeatIntervalMs=(unsigned long)sec*1000UL; }
     backendSendResult(uid,"{\"status\":\"Accepted\"}");
   }
   else if(action=="TriggerMessage"){
@@ -163,6 +179,13 @@ String extractJsonString(const String& src, const String& key){
   int q2=src.indexOf('"',q1+1); if(q2<0) return "";
   return src.substring(q1+1,q2);
 }
+
+int extractJsonStringInt(const String& src, const String& key, int fallback){
+  String v=extractJsonString(src,key);
+  if(v.length()==0) return fallback;
+  return v.toInt();
+}
+
 int extractJsonInt(const String& src, const String& key, int fallback){
   int k=src.indexOf("\""+key+"\""); if(k<0) return fallback;
   int c=src.indexOf(':',k); if(c<0) return fallback;
