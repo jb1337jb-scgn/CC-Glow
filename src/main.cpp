@@ -4,6 +4,7 @@
 #include <Preferences.h>
 #include <time.h>
 #include <Adafruit_NeoPixel.h>
+#include <WebSocketsClient.h>
 
 // WLAN
 const char* STA_SSID = "internet";
@@ -11,8 +12,10 @@ const char* STA_PASSWORD = "internet";
 const char* AP_PASSWORD = "chargecloud";
 String deviceId;
 String apSsid;
+String chargeBoxId;
 WebServer server(80);
 Preferences prefs;
+WebSocketsClient backendWs;
 
 // NeoPixel / Onboard RGB LED
 #define NEOPIXEL_PIN 48
@@ -55,6 +58,55 @@ String activeSessionStartTime="";
 unsigned long sessionStartMillis=0;
 unsigned long lastMeterMillis=0;
 float activeEnergyKwh=0.0f;
+
+
+// Backend / OCPP 1.6J WebSocket
+const char* BACKEND_HOST = "demo.ocpp.cc";
+const uint16_t BACKEND_PORT = 80;
+const char* BACKEND_TENANT_PATH = "/83d29edd7b79881259e1759ed19ea569";
+String backendPath;
+bool backendConnected = false;
+String lastBackendEvent = "-";
+String lastBackendMessage = "-";
+unsigned long backendEventCount = 0;
+unsigned long ocppMsgCounter = 1;
+int currentTransactionId = 1;
+unsigned long lastBackendMeterMillis = 0;
+
+String isoTimestamp(){
+  struct tm t;
+  if(getLocalTime(&t,50)){ char b[25]; strftime(b,sizeof(b),"%Y-%m-%dT%H:%M:%SZ",&t); return String(b); }
+  return "2026-05-30T00:00:00Z";
+}
+String ocppUid(){ return "msg-" + String(ocppMsgCounter++); }
+void backendSendRaw(const String& action,const String& payload){
+  if(!backendConnected) return;
+  String msg = "[2,\"" + ocppUid() + "\",\"" + action + "\"," + payload + "]";
+  backendWs.sendTXT(msg);
+  lastBackendEvent = action; backendEventCount++;
+}
+void sendBackendEvent(const String& eventName, float powerKw=0.0f){
+  String ts = isoTimestamp();
+  if(eventName=="BootNotification") backendSendRaw("BootNotification", "{\"chargePointVendor\":\"chargecloud\",\"chargePointModel\":\"ESP32S3 Glow Simulator\",\"chargePointSerialNumber\":\""+chargeBoxId+"\",\"firmwareVersion\":\"stage1-websocket\"}");
+  else if(eventName=="Authorize") backendSendRaw("Authorize", "{\"idTag\":\"GLOW-DEMO\"}");
+  else if(eventName=="StartTransaction") backendSendRaw("StartTransaction", "{\"connectorId\":1,\"idTag\":\"GLOW-DEMO\",\"meterStart\":0,\"timestamp\":\""+ts+"\"}");
+  else if(eventName=="MeterValues") backendSendRaw("MeterValues", "{\"connectorId\":1,\"transactionId\":"+String(currentTransactionId)+",\"meterValue\":[{\"timestamp\":\""+ts+"\",\"sampledValue\":[{\"value\":\""+String(activeEnergyKwh,3)+"\",\"measurand\":\"Energy.Active.Import.Register\",\"unit\":\"kWh\"},{\"value\":\""+String(powerKw,1)+"\",\"measurand\":\"Power.Active.Import\",\"unit\":\"kW\"}]}]}");
+  else if(eventName=="StopTransaction") backendSendRaw("StopTransaction", "{\"transactionId\":"+String(currentTransactionId)+",\"meterStop\":"+String((int)(activeEnergyKwh*1000.0f))+",\"timestamp\":\""+ts+"\"}");
+  else if(eventName=="Faulted") backendSendRaw("StatusNotification", "{\"connectorId\":1,\"errorCode\":\"OtherError\",\"status\":\"Faulted\"}");
+  else { String st = eventName; backendSendRaw("StatusNotification", "{\"connectorId\":1,\"errorCode\":\"NoError\",\"status\":\""+st+"\"}"); }
+}
+void backendWsEvent(WStype_t type, uint8_t* payload, size_t length){
+  if(type==WStype_CONNECTED){ backendConnected=true; lastBackendMessage="CONNECTED"; sendBackendEvent("BootNotification"); sendBackendEvent("Available"); }
+  else if(type==WStype_DISCONNECTED){ backendConnected=false; lastBackendMessage="DISCONNECTED"; }
+  else if(type==WStype_TEXT){ lastBackendMessage=String((char*)payload).substring(0,180); }
+}
+void setupBackend(){
+  chargeBoxId = "EVSE-ESP32S3-" + deviceId;
+  backendPath = String(BACKEND_TENANT_PATH) + "/" + chargeBoxId;
+  backendWs.begin(BACKEND_HOST, BACKEND_PORT, backendPath.c_str(), "ocpp1.6");
+  backendWs.onEvent(backendWsEvent);
+  backendWs.setReconnectInterval(5000);
+}
 
 String currentDateTimeString(){
   struct tm t;
@@ -101,9 +153,9 @@ void updateEnergy(float powerKw,bool force=false){
   if(force || now-lastMeterMillis>=METER_INTERVAL_MS){ activeEnergyKwh += powerKw*((now-lastMeterMillis)/3600000.0f); lastMeterMillis=now; }
 }
 void syncSession(float powerKw){
-  if(state==CHARGING && !sessionActive){ sessionActive=true; activeSessionStartTime=currentDateTimeString(); sessionStartMillis=millis(); lastMeterMillis=millis(); activeEnergyKwh=0; }
-  if(state!=CHARGING && sessionActive){ updateEnergy(powerKw,true); addSession(activeSessionStartTime,currentDateTimeString(),activeEnergyKwh); sessionActive=false; }
-  if(state==CHARGING && sessionActive) updateEnergy(powerKw,false);
+  if(state==CHARGING && !sessionActive){ sessionActive=true; activeSessionStartTime=currentDateTimeString(); sessionStartMillis=millis(); lastMeterMillis=millis(); lastBackendMeterMillis=millis(); activeEnergyKwh=0; sendBackendEvent("Authorize"); sendBackendEvent("StartTransaction", powerKw); }
+  if(state!=CHARGING && sessionActive){ updateEnergy(powerKw,true); sendBackendEvent("StopTransaction", powerKw); addSession(activeSessionStartTime,currentDateTimeString(),activeEnergyKwh); sessionActive=false; currentTransactionId++; }
+  if(state==CHARGING && sessionActive){ updateEnergy(powerKw,false); if(millis()-lastBackendMeterMillis>=10000){ lastBackendMeterMillis=millis(); sendBackendEvent("MeterValues", powerKw); } }
 }
 
 void updateNeoPixel(){
@@ -130,11 +182,27 @@ void updateLeds(){
 
 String getDeviceId(){ uint64_t id=ESP.getEfuseMac(); char b[13]; snprintf(b,sizeof(b),"%04X%08X",(uint16_t)(id>>32),(uint32_t)id); return String(b); }
 void setupWiFi(){
-  deviceId=getDeviceId(); apSsid="EVSE-SIM-"+deviceId.substring(deviceId.length()-6);
-  WiFi.persistent(false); WiFi.disconnect(true,true); WiFi.mode(WIFI_OFF); delay(300); WiFi.mode(WIFI_AP_STA); WiFi.setSleep(false);
+  deviceId=getDeviceId();
+  apSsid="EVSE-SIM-"+deviceId.substring(deviceId.length()-6);
+  WiFi.persistent(false);
+  WiFi.disconnect(true,true);
+  WiFi.mode(WIFI_OFF);
+  delay(500);
+  WiFi.mode(WIFI_AP_STA);
+  WiFi.setSleep(false);
+  delay(500);
   bool ok=WiFi.softAP(apSsid.c_str(),AP_PASSWORD,1,false,4);
-  Serial.println(ok?"AP gestartet":"AP Fehler"); Serial.println(apSsid); Serial.println(WiFi.softAPIP());
-  WiFi.begin(STA_SSID,STA_PASSWORD); configTime(3600,3600,"pool.ntp.org","time.nist.gov");
+  Serial.println();
+  WiFi.begin(STA_SSID, STA_PASSWORD);
+  Serial.println("AP+STA Modus");
+  Serial.print("AP Start: ");
+  Serial.println(ok?"OK":"FAILED");
+  Serial.print("AP SSID: ");
+  Serial.println(apSsid);
+  Serial.print("AP Passwort: ");
+  Serial.println(AP_PASSWORD);
+  Serial.print("AP IP: ");
+  Serial.println(WiFi.softAPIP());
 }
 
 String htmlPage(){ return R"rawliteral(
@@ -142,6 +210,7 @@ String htmlPage(){ return R"rawliteral(
 :root{--bg:#08051f;--card:#151033;--line:#37305f;--text:#f7f2ff;--muted:#b8add6;--cyan:#00d9ff;--blue:#367cff;--pink:#ff3ecf;--green:#26f5a8;--red:#ff4d7d;--yellow:#ffd166}*{box-sizing:border-box}body{font-family:Arial,sans-serif;background:radial-gradient(circle at 20% 0%,rgba(255,62,207,.30),transparent 34%),radial-gradient(circle at 80% 10%,rgba(0,217,255,.28),transparent 36%),linear-gradient(160deg,#090420,#071b3d 55%,#19082d);color:var(--text);margin:0;padding:22px}.container{max-width:980px;margin:auto}.brand{text-align:center;margin-bottom:22px}.logo{font-size:2.1rem;font-weight:800}.logo span{color:var(--pink)}h1{text-shadow:0 0 18px rgba(255,62,207,.55),0 0 32px rgba(0,217,255,.35)}.stack{display:flex;flex-direction:column;gap:16px}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:16px}.card{background:linear-gradient(160deg,rgba(21,16,51,.96),rgba(10,32,67,.92));border:1px solid rgba(255,62,207,.22);border-radius:16px;padding:16px}.row{display:flex;justify-content:space-between;gap:12px;border-bottom:1px solid var(--line);padding:10px 0}.row:last-child{border-bottom:0}.badge{padding:6px 11px;border-radius:999px;font-weight:700}.on{background:var(--green);color:#062014}.off{background:#506176}.error{background:var(--red)}.warn{background:var(--yellow);color:#271d00}.info{background:linear-gradient(90deg,var(--blue),var(--cyan));color:#001c25}.value{font-weight:700;color:var(--yellow)}button{border:0;border-radius:8px;padding:7px 10px;margin:4px;cursor:pointer}.btnPink{background:var(--pink);color:#fff}.btnBlue{background:var(--blue);color:#fff}.btnCyan{background:var(--cyan);color:#001c25}canvas{width:100%;height:260px;background:rgba(8,10,38,.72);border:1px solid rgba(0,217,255,.18);border-radius:14px}.step{display:flex;align-items:center;gap:10px;padding:10px;border-radius:12px;background:rgba(8,10,38,.72);border:1px solid rgba(0,217,255,.18);margin-top:8px}.dot{width:13px;height:13px;border-radius:50%;background:#506176}.active .dot{background:var(--green);box-shadow:0 0 12px var(--green)}.desc{margin-left:auto;text-align:right;color:var(--muted)}
 </style></head><body><div class="container"><div class="brand"><div class="logo">charge<span>cloud</span></div><h1>Glow Challenge</h1><div>EVSE Simulator</div></div><div class="stack">
 <div class="grid"><div class="card"><h2>System</h2><div class="row"><span>Geräte-ID</span><span id="deviceId" class="value">-</span></div><div class="row"><span>AP SSID</span><span id="apSsid" class="value">-</span></div><div class="row"><span>AP IP</span><span id="apIp" class="value">-</span></div><div class="row"><span>STA IP</span><span id="staIp" class="value">-</span></div></div><div class="card"><h2>Ladestation</h2><div class="row"><span>Status</span><span id="chargerState" class="badge off">-</span></div><div class="row"><span>OCPP Status</span><span id="ocppStatus" class="badge off">-</span></div><div class="row"><span>Ladeleistung</span><span><span id="powerKw" class="value">0.0</span> kW</span></div><div class="row"><span>Strom</span><span><span id="currentA" class="value">0.0</span> A</span></div></div></div>
+<div class="card"><h2>Backend WebSocket</h2><div class="row"><span>Status</span><span id="backendStatus" class="badge off">-</span></div><div class="row"><span>URL</span><span id="backendUrl" class="value">-</span></div><div class="row"><span>Letztes Event</span><span id="backendLastEvent" class="value">-</span></div><div class="row"><span>Letzte Antwort</span><span id="backendLastMessage" class="value">-</span></div><div class="row"><span>Events gesendet</span><span id="backendCount" class="value">0</span></div></div>
 <div class="card"><h2>Ladeleistung Verlauf</h2><canvas id="powerChart" width="900" height="260"></canvas></div>
 <div class="card"><h2>Aktuelle Session</h2><div class="row"><span>Session Status</span><span id="activeState" class="badge off">INAKTIV</span></div><div class="row"><span>State ist CHARGING</span><span id="stateIsCharging" class="badge off">NEIN</span></div><div class="row"><span>Start</span><span id="activeStart" class="value">-</span></div><div class="row"><span>Dauer</span><span><span id="activeDuration" class="value">0</span> s</span></div><div class="row"><span>Verbrauch</span><span><span id="activeEnergy" class="value">0.000</span> kWh</span></div><div class="row"><span>Kosten</span><span><span id="activeCost" class="value">0.000</span> EUR</span></div><div class="row"><span>Tarif</span><span class="value">5,00 EUR/kWh</span></div></div>
 <div class="grid"><div class="card"><h2>Eingänge</h2><div class="row"><span>GPIO3 Poti ADC</span><span id="adcValue" class="value">-</span></div><div class="row"><span>GPIO4 Fahrzeug verbunden</span><span id="inVehicle" class="badge off">-</span></div><div class="row"><span>GPIO5 Start/Auth</span><span id="inStart" class="badge off">-</span></div><div class="row"><span>GPIO6 Stop</span><span id="inStop" class="badge off">-</span></div><div class="row"><span>GPIO7 Fehler</span><span id="inError" class="badge off">-</span></div></div><div class="card"><h2>Ausgänge</h2><div class="row"><span>GPIO8 Available</span><span id="outAvailable" class="badge off">-</span></div><div class="row"><span>GPIO9 Preparing</span><span id="outPreparing" class="badge off">-</span></div><div class="row"><span>GPIO10 Charging</span><span id="outCharging" class="badge off">-</span></div><div class="row"><span>GPIO11 Faulted</span><span id="outFaulted" class="badge off">-</span></div></div></div>
@@ -170,10 +239,10 @@ void handleStatus(){
 
 void setupWeb(){ server.on("/",[](){server.send(200,"text/html",htmlPage());}); server.on("/api/status",handleStatus); server.on("/api/session/delete",[](){ if(server.hasArg("id")) deleteSession(server.arg("id").toInt()); server.send(200,"application/json","{\"ok\":true}");}); server.on("/api/session/clear",[](){clearSessions(); server.send(200,"application/json","{\"ok\":true}");}); server.begin(); }
 
-void setup(){ Serial.begin(115200); delay(300); if(NEOPIXEL_ENABLED){ pixel.begin(); pixel.clear(); pixel.show(); } pinMode(PIN_VEHICLE_CONNECTED,INPUT_PULLUP); pinMode(PIN_START_AUTH,INPUT_PULLUP); pinMode(PIN_STOP,INPUT_PULLUP); pinMode(PIN_ERROR,INPUT_PULLUP); pinMode(PIN_POWER_POTI,INPUT); pinMode(LED_AVAILABLE,OUTPUT); pinMode(LED_PREPARING,OUTPUT); pinMode(LED_CHARGING,OUTPUT); pinMode(LED_FAULTED,OUTPUT); analogReadResolution(12); loadSessions(); setupWiFi(); setupWeb(); updateLeds(); }
+void setup(){ Serial.begin(115200); delay(300); if(NEOPIXEL_ENABLED){ pixel.begin(); pixel.clear(); pixel.show(); } pinMode(PIN_VEHICLE_CONNECTED,INPUT_PULLUP); pinMode(PIN_START_AUTH,INPUT_PULLUP); pinMode(PIN_STOP,INPUT_PULLUP); pinMode(PIN_ERROR,INPUT_PULLUP); pinMode(PIN_POWER_POTI,INPUT); pinMode(LED_AVAILABLE,OUTPUT); pinMode(LED_PREPARING,OUTPUT); pinMode(LED_CHARGING,OUTPUT); pinMode(LED_FAULTED,OUTPUT); analogReadResolution(12); loadSessions(); setupWiFi(); setupBackend(); setupWeb(); updateLeds(); }
 
 void loop(){
-  server.handleClient();
+  server.handleClient(); backendWs.loop();
   bool vehicle=updateDebounced(inVehicle), start=updateDebounced(inStart), stop=updateDebounced(inStop), err=updateDebounced(inError);
   bool startEvent=start && !lastStartStable; bool stopEvent=stop && !lastStopStable; lastStartStable=start; lastStopStable=stop;
   int adc=analogRead(PIN_POWER_POTI); float kw=adcToPowerKw(adc);
