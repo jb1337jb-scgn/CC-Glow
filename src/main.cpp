@@ -59,6 +59,14 @@ unsigned long sessionStartMillis=0;
 unsigned long lastMeterMillis=0;
 float activeEnergyKwh=0.0f;
 
+// Forward declarations
+float adcToPowerKw(int adc);
+float powerKwToCurrentA(float kw);
+String extractOcppUid(const String& msg);
+int extractJsonInt(const String& src, const String& key, int fallback);
+int extractJsonStringInt(const String& src, const String& key, int fallback);
+
+
 
 // Backend / OCPP 1.6J WebSocket
 const char* BACKEND_HOST = "demo.ocpp.cc";
