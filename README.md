@@ -88,3 +88,10 @@ This version maps local simulator events to the MicroOcpp communication layer an
 - Unplug -> OCPP sync Available
 
 The local simulator remains local-first. MicroOcpp v1.2.0 is initialized when backend mode is enabled and `mocpp_loop()` runs continuously. Depending on the exact CSMS and transport adapter, additional adapter-specific transaction API calls may be required for strict backend-controlled operation.
+
+
+## v13 fixed compile patch
+
+Patched for MicroOcpp v1.2.0 API:
+- `mocpp_initialize(...)` now uses the 4-argument URL overload; OCPP 1.6 is the default.
+- Removed the invalid `MicroOcpp::setConnectorPluggedInput` namespace usage. In v1.2.0 this helper is exposed as a global API function.
